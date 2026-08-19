@@ -410,3 +410,61 @@ def test_debate_markdown_narrative_returns_none(tmp_path):
     from studio.replay.debate import load_debate_from_file
 
     assert load_debate_from_file(p) is None
+
+
+# ---------- fetch_report：result 丢失后的文件卷兜底 ----------
+
+def test_fetch_report_falls_back_to_status_and_disk(tmp_path):
+    """get_result 404（引擎重启 result 丢）→ 走 get_status 拿 symbol → 文件卷命中。"""
+    from studio.digest.fetcher import fetch_report
+
+    reports = tmp_path / "analysis_results" / "600619" / "2026-08-19" / "reports"
+    reports.mkdir(parents=True)
+    (reports / "final_trade_decision.md").write_text("买入，目标价 12 元", encoding="utf-8")
+
+    class FakeClient:
+        def get_result(self, task_id):
+            raise RuntimeError("404")
+        def get_status(self, task_id):
+            return {"stock_code": "600619", "status": "completed"}
+
+    doc = fetch_report(FakeClient(), "tid-x", ta_dir=tmp_path)
+    assert doc.source == "file"
+    assert doc.symbol == "600619"
+    assert doc.date == "2026-08-19"
+    assert "买入" in doc.text
+
+
+def test_fetch_report_two_level_dir_scan_without_symbol(tmp_path):
+    """symbol 也拿不到时，全市场两层扫描仍能找到（symbol/日期/reports）。"""
+    from studio.digest.fetcher import fetch_report
+
+    reports = tmp_path / "analysis_results" / "600519" / "2026-08-18" / "reports"
+    reports.mkdir(parents=True)
+    (reports / "research_team_decision.md").write_text("持有", encoding="utf-8")
+
+    class FakeClient:
+        def get_result(self, task_id):
+            return {}
+        def get_status(self, task_id):
+            return {}
+
+    doc = fetch_report(FakeClient(), "tid-y", ta_dir=tmp_path)
+    assert doc.source == "file"
+    assert doc.symbol == "600519"
+    assert "持有" in doc.text
+
+
+def test_fetch_report_raises_when_nothing_found(tmp_path):
+    """API 与文件卷都没有 → FileNotFoundError，消息带 task_id。"""
+    import pytest as _pytest
+    from studio.digest.fetcher import fetch_report
+
+    class FakeClient:
+        def get_result(self, task_id):
+            raise RuntimeError("404")
+        def get_status(self, task_id):
+            raise RuntimeError("404")
+
+    with _pytest.raises(FileNotFoundError, match="tid-z"):
+        fetch_report(FakeClient(), "tid-z", ta_dir=tmp_path)

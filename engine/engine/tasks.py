@@ -182,11 +182,12 @@ class TaskManager:
         if task:
             task.sse_queues.discard(queue)
 
-    def _persist(self, task: AnalysisTask) -> None:
+    def _persist(self, task: "AnalysisTask") -> None:
         """把任务写入 /data/tasks/{task_id}.json。"""
         try:
             path = self._persistence_dir / f"{task.task_id}.json"
-            path.write_text(json.dumps(task.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
+            path.write_text(json.dumps(task.to_dict(), ensure_ascii=False, indent=2,
+                                       default=_json_safe), encoding="utf-8")
         except Exception as e:
             logger.warning("持久化任务 %s 失败: %s", task.task_id, e)
 
@@ -310,3 +311,15 @@ class TaskManager:
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _json_safe(o: Any) -> Any:
+    """json.dumps 的 default 兜底：final_state 里常混入 datetime/枚举/LangChain 消息对象。
+
+    没有它时，含这些对象的 result 会让 _persist 静默失败（任务文件停留在
+    running 态，重启后被误判为 failed——2026-08-19 实网踩坑）。
+    """
+    isoformat = getattr(o, "isoformat", None)
+    if callable(isoformat):
+        return isoformat()
+    return str(o)

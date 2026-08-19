@@ -36,6 +36,13 @@ def fetch_report(client, task_id: str, ta_dir: Optional[Path] = None) -> ReportD
     except Exception:
         data = {}
     symbol = str(data.get("symbol") or data.get("stock_code") or "")
+    if not symbol:
+        # 引擎重启后 result 可能丢，但 status 里还有 stock_code（任务有持久化）
+        try:
+            st = client.get_status(task_id)
+            symbol = str(st.get("stock_code") or st.get("stock_symbol") or "")
+        except Exception:
+            pass
 
     if ta_dir:
         doc = _from_dir(ta_dir, symbol)
@@ -74,12 +81,15 @@ def _result_to_text(data: dict) -> str:
 def _from_dir(ta_dir: Path, symbol: str) -> Optional[ReportDoc]:
     """扫 analysis_results/<symbol>/<date>/reports/*.md，按优先级拼接。"""
     base = Path(ta_dir) / "analysis_results"
-    roots = [base / symbol] if symbol else []
-    roots.append(base)  # symbol 未知时全扫
-    for root in roots:
-        if not root.is_dir():
+    # symbol 目录列表：已知 symbol 只扫它；未知时全扫（目录是 <base>/<symbol>/<date> 两层）
+    if symbol:
+        sym_dirs = [base / symbol]
+    else:
+        sym_dirs = sorted([p for p in base.iterdir() if p.is_dir()], reverse=True) if base.is_dir() else []
+    for sym_dir in sym_dirs:
+        if not sym_dir.is_dir():
             continue
-        day_dirs = sorted([p for p in root.iterdir() if p.is_dir()], reverse=True)
+        day_dirs = sorted([p for p in sym_dir.iterdir() if p.is_dir()], reverse=True)
         for day in day_dirs:
             reports = day / "reports"
             if not reports.is_dir():
@@ -94,7 +104,7 @@ def _from_dir(ta_dir: Path, symbol: str) -> Optional[ReportDoc]:
             )
             return ReportDoc(
                 text=text, source="file",
-                symbol=symbol or root.name, date=day.name,
+                symbol=symbol or sym_dir.name, date=day.name,
             )
     return None
 

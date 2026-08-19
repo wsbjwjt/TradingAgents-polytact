@@ -232,3 +232,31 @@ def date_today() -> str:
     from datetime import date
 
     return date.today().isoformat()
+
+
+def test_task_persist_with_unserializable_result(client, auth_headers):
+    """result 混入 date/枚举等对象时 _persist 不再静默失败（重启不误判 failed）。"""
+    import asyncio
+    from datetime import date as _date
+
+    from engine.main import task_manager
+    from engine.schemas import AnalysisParameters
+    from engine.tasks import AnalysisTask
+
+    # 直接构造并入册：create_task 会向事件循环投递，测试尾部 loop 已关会炸
+    task = AnalysisTask("testpersist-unserializable", "600519", AnalysisParameters())
+    task_manager._tasks[task.task_id] = task
+    result = {
+        "symbol": "600519",
+        "trade_date": _date(2026, 8, 19),          # json 默认无法序列化
+        "decision": {"action": "持有"},
+        "raw": object(),                            # 极端：完全未知对象
+    }
+    asyncio.run(task_manager.complete_task(task.task_id, result, 1.0, 0))
+
+    persisted = json.loads(
+        (Path(os.environ["TA_DATA_DIR"]) / "tasks" / f"{task.task_id}.json").read_text(encoding="utf-8")
+    )
+    assert persisted["status"] == "completed"
+    assert persisted["result"]["trade_date"] == "2026-08-19"
+    assert persisted["result"]["decision"]["action"] == "持有"
