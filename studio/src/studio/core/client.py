@@ -80,7 +80,10 @@ class TradingAgentsClient:
             "market_type": market,
             "research_depth": depth,
             **({"analysis_date": analysis_date} if analysis_date else {}),
-            "selected_analysts": analysts or ["market", "fundamentals", "news"],
+            # 晨报默认 7 分析师全流程；compare 等场景经 yaml/参数显式收窄
+            "selected_analysts": analysts or [
+                "market", "social", "news", "fundamentals", "policy", "hot_money", "lockup",
+            ],
             "include_sentiment": True,
             "include_risk": True,
             "language": "zh-CN",
