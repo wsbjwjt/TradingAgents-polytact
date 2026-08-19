@@ -216,10 +216,23 @@ def _make_message_handler(
         resolved: list[tuple[str, str]] = []
         seen: set[str] = set()
         failed: list[str] = []
+        degraded = False
         try:
             engine = _get_engine()
             for tok in candidates:
-                hit = engine.resolve_stock(tok)
+                try:
+                    hit = engine.resolve_stock(tok)
+                except Exception:
+                    # resolve 失败（典型：名称表首次构建超 30s）。探活区分两种命运：
+                    # 引擎活着 → 6 位代码格式本身可信，降级透传（名称为空）；
+                    # 引擎死了 → 整体红卡，不再继续。
+                    engine.health()
+                    if re.fullmatch(r"\d{6}", tok):
+                        hit = (tok, "")
+                        degraded = True
+                    else:
+                        failed.append(tok)
+                        continue
                 if hit and hit[0]:
                     if hit[0] not in seen:  # 代码与中文名可能解析到同一只，按代码去重
                         seen.add(hit[0])
@@ -241,9 +254,12 @@ def _make_message_handler(
             _send_card(lark_client, chat_id, "未识别到股票", md, template="grey")
             return
 
+        confirm = _confirm_md(resolved, failed)
+        if degraded:
+            confirm += "\n\nℹ️ 名称校验服务暂慢，6 位代码已直接受理"
         _send_card(
             lark_client, chat_id, f"已受理 {len(resolved)} 只",
-            _confirm_md(resolved, failed), template="green",
+            confirm, template="green",
         )
 
         today = date.today().isoformat()

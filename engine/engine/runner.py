@@ -56,11 +56,28 @@ def resolve_stock_name(symbol: str) -> str:
     """解析股票代码对应的名称；mock 模式返回占位名。"""
     if settings.is_mock:
         return f"{symbol}（模拟）"
-    # 延迟导入 astock
-    from tradingagents.dataflows.a_stock import _code_to_name, _build_name_code_map
+    # 延迟导入 astock；用模块属性访问而非 from-import 绑定
+    # （_build_name_code_map 会重新赋值 _code_to_name 全局，from-import 拿到的旧绑定永远是 None）
+    from tradingagents.dataflows import a_stock
 
-    _build_name_code_map()
-    return _code_to_name.get(symbol, "")
+    a_stock._build_name_code_map()
+    return (a_stock._code_to_name or {}).get(symbol, "")
+
+
+def _warm_name_map_async() -> None:
+    """后台线程建名称映射表（首次 mootdx 全市场拉取很慢，绝不阻塞请求路径）。"""
+    import threading
+
+    def _w():
+        try:
+            from tradingagents.dataflows.a_stock import _build_name_code_map
+
+            _build_name_code_map()
+            logger.info("股票名称映射表预热完成")
+        except Exception as exc:
+            logger.warning("名称映射表预热失败（下次请求重试）: %s", exc)
+
+    threading.Thread(target=_w, daemon=True).start()
 
 
 def resolve_stock(query: str) -> tuple[str, str]:
@@ -68,6 +85,10 @@ def resolve_stock(query: str) -> tuple[str, str]:
 
     无法解析时抛 ValueError（消息已带面向用户的说明，可直接透传）。
     mock 模式只接受 6 位数字代码。
+
+    性能约束：6 位代码走 astock 纯本地规范化，**不触发名称表构建**（首次构建
+    要 mootdx 拉全市场列表，可能超过调用方超时）；表未建好时名称降级为空串，
+    并踢一个后台线程去建表，后续请求即可拿到名称。中文名必须查表，同步等。
     """
     import re
 
@@ -80,19 +101,15 @@ def resolve_stock(query: str) -> tuple[str, str]:
         raise ValueError(f"找不到股票 '{q}'（mock 模式只接受 6 位代码）")
 
     # 延迟导入 astock；resolve_ticker 覆盖代码规范化与中文名精确/唯一模糊匹配
-    from tradingagents.dataflows.a_stock import (
-        _build_name_code_map,
-        _code_to_name,
-        resolve_ticker,
-    )
+    from tradingagents.dataflows import a_stock
 
-    code = resolve_ticker(q)
-    # 代码解析不依赖名称映射表；mootdx 不可达时名称降级为空串但代码仍可用
-    try:
-        _build_name_code_map()
-        name = (_code_to_name or {}).get(code, "")
-    except ValueError:
+    code = a_stock.resolve_ticker(q)
+    if a_stock._code_to_name is not None:
+        name = a_stock._code_to_name.get(code, "")
+    else:
+        # 代码输入不阻塞等表；中文输入 resolve_ticker 内部已同步建过表，不会到这
         name = ""
+        _warm_name_map_async()
     return code, name
 
 

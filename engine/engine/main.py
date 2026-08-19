@@ -56,6 +56,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """应用生命周期：启动 worker，关闭时清理。"""
     await task_manager.start()
     logger.info("Engine 服务已启动，mock=%s", settings.is_mock)
+    if not settings.is_mock:
+        # 后台预热股票名称表（首次 mootdx 全市场拉取很慢；预热后 resolve/中文名解析秒回）
+        from engine.runner import _warm_name_map_async
+
+        _warm_name_map_async()
     yield
     await task_manager.stop()
     logger.info("Engine 服务已关闭")
@@ -223,11 +228,15 @@ async def usage_records(
 
 
 @app.get("/api/stock-data/basic-info/{symbol}", response_model=StandardResponse)
-async def stock_basic_info(
+def stock_basic_info(
     symbol: str,
     user: str = Depends(require_auth),
 ) -> dict[str, Any]:
-    """返回股票代码与名称映射。mock 模式下返回占位数据。"""
+    """返回股票代码与名称映射。mock 模式下返回占位数据。
+
+    同步 def（非 async）：名称表首次构建是慢 IO,def 端点由 FastAPI 放线程池
+    执行，不阻塞事件循环。
+    """
     from engine.runner import resolve_stock_name
 
     name = resolve_stock_name(symbol)
@@ -239,13 +248,14 @@ async def stock_basic_info(
 
 
 @app.get("/api/stock-data/resolve/{query}", response_model=StandardResponse)
-async def stock_resolve(
+def stock_resolve(
     query: str,
     user: str = Depends(require_auth),
 ) -> dict[str, Any]:
     """把代码或中文名解析为 (代码, 名称)，供飞书 bot 入站校验。
 
     无法识别时返回 success=False（消息面向用户，可直接展示），HTTP 状态仍为 200。
+    同步 def 放线程池执行；6 位代码不触发名称表构建，毫秒级返回。
     """
     from engine.runner import resolve_stock
 

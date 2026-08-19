@@ -291,7 +291,10 @@ def test_bot_engine_down_replies_red_card(tmp_path, monkeypatch):
     def _boom(tok):
         raise ConnectionError("engine unreachable")
 
-    fake_engine = NS(resolve_stock=_boom)
+    def _health_boom():
+        raise ConnectionError("engine unreachable")
+
+    fake_engine = NS(resolve_stock=_boom, health=_health_boom)
     store = Store(cfg.store_path())
     handler = listener_mod._make_message_handler(cfg, store, None, engine_client=fake_engine)
 
@@ -301,6 +304,38 @@ def test_bot_engine_down_replies_red_card(tmp_path, monkeypatch):
     title, md, template = cards[0]
     assert title == "引擎连接失败"
     assert template == "red"
+    store.close()
+
+
+def test_bot_resolve_timeout_degrades_code_passthrough(tmp_path, monkeypatch):
+    """resolve 超时但引擎活着（health 通）：6 位代码降级透传，中文名进未识别。"""
+    monkeypatch.delenv("FEISHU_CHAT_ID", raising=False)
+    cfg = _cfg(tmp_path, {"app_id": "a", "app_secret": "b"})
+
+    import studio.bot.listener as listener_mod
+    from studio.core.store import Store
+
+    cards = _capture_cards(monkeypatch)
+    runs = []
+    monkeypatch.setattr(
+        listener_mod, "run_pipeline",
+        lambda cfg_, store_, symbol, **kw: runs.append(symbol),
+    )
+
+    def _slow(tok):
+        raise TimeoutError("read timed out")
+
+    fake_engine = NS(resolve_stock=_slow, health=lambda: {"status": "ok"})
+    store = Store(cfg.store_path())
+    handler = listener_mod._make_message_handler(cfg, store, None, engine_client=fake_engine)
+
+    handler(_text_event("m1", "oc_1", "600619，贵州茅台"))
+    assert runs == ["600619"]           # 代码降级透传
+    assert len(cards) == 1
+    title, md, template = cards[0]
+    assert template == "green"
+    assert "名称校验" in md              # 降级提示可见
+    assert "未识别：贵州茅台" in md       # 中文名无法校验
     store.close()
 
 
