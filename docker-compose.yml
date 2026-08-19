@@ -1,4 +1,4 @@
-name: polytact
+name: polytact-morning
 
 # TradingAgents-polytact 一体化部署：
 #   engine  —— astock 引擎的 FastAPI 包装（仅 compose 内网，不公网暴露）
