@@ -355,3 +355,58 @@ def test_bot_resolve_timeout_degrades_code_passthrough(tmp_path, monkeypatch):
 def test_parse_message_text(raw, expected):
     from studio.bot.listener import parse_message_text
     assert parse_message_text(raw) == expected
+
+
+# ---------- 多空辩论回放数据解析 ----------
+
+def test_debate_parse_json_state(tmp_path):
+    """engine 写的 investment_debate_state.json 能解析出辩论轮次。"""
+    state = {
+        "history": "Bull Analyst: 看多理由\n\nBear Analyst: 看空理由",
+        "bull_history": "Bull Analyst: 看多理由",
+        "bear_history": "Bear Analyst: 看空理由",
+        "judge_decision": "持有",
+    }
+    p = tmp_path / "investment_debate_state.json"
+    p.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+    from studio.replay.debate import load_debate_from_file
+
+    d = load_debate_from_file(p, "research")
+    assert d is not None
+    assert [t.speaker for t in d.turns] == ["Bull", "Bear"]
+    assert d.verdict == "持有"
+
+
+def test_debate_parse_risk_aggressive_prefix(tmp_path):
+    """astock 风控辩论的 Aggressive/Conservative 前缀也能切轮次。"""
+    state = {
+        "aggressive_history": "Aggressive Analyst: 冲",
+        "conservative_history": "Conservative Analyst: 稳",
+        "judge_decision": "风险中等",
+    }
+    p = tmp_path / "risk_debate_state.json"
+    p.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+    from studio.replay.debate import load_debate_from_file
+
+    d = load_debate_from_file(p, "risk")
+    assert d is not None
+    assert {t.side for t in d.turns} == {"risky", "safe"}
+
+
+def test_debate_parse_hsliuping_repr(tmp_path):
+    """hsliuping 原版 dict repr 格式仍能解析（回落路径）。"""
+    p = tmp_path / "research_team_decision.md"
+    p.write_text(repr({"judge_decision": "买入", "history": "Bull Analyst: 多"}), encoding="utf-8")
+    from studio.replay.debate import load_debate_from_file
+
+    d = load_debate_from_file(p)
+    assert d is not None and d.verdict == "买入" and len(d.turns) == 1
+
+
+def test_debate_markdown_narrative_returns_none(tmp_path):
+    """渲染后的 markdown（无 dict 结构）不误判为辩论数据。"""
+    p = tmp_path / "research_team_decision.md"
+    p.write_text("# 投资决议\n\n**最终评级：买入**", encoding="utf-8")
+    from studio.replay.debate import load_debate_from_file
+
+    assert load_debate_from_file(p) is None

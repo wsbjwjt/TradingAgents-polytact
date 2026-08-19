@@ -16,7 +16,7 @@ from typing import Optional
 
 from ..core.textutil import _unescape
 
-SPEAKER_RE = re.compile(r"(?m)^(Bull|Bear|Risky|Safe|Neutral)\s+Analyst:\s*")
+SPEAKER_RE = re.compile(r"(?m)^(Bull|Bear|Risky|Safe|Neutral|Aggressive|Conservative)\s+Analyst:\s*")
 
 SIDE_LABELS = {
     "Bull": ("多头", "bull"),
@@ -24,6 +24,9 @@ SIDE_LABELS = {
     "Risky": ("激进", "risky"),
     "Safe": ("保守", "safe"),
     "Neutral": ("中性", "neutral"),
+    # astock 风控辩论用 Aggressive/Conservative 命名（hsliuping 用 Risky/Safe）
+    "Aggressive": ("激进", "risky"),
+    "Conservative": ("保守", "safe"),
 }
 
 
@@ -72,14 +75,25 @@ def parse_history(history: str) -> list[Turn]:
 
 
 def load_debate_from_file(path: Path, kind: str = "research") -> Optional[Debate]:
-    """读取并解析一份辩论报告文件；不是 dict 结构或无轮次则返回 None。"""
+    """读取并解析一份辩论报告文件；不是 dict 结构或无轮次则返回 None。
+
+    支持两种落盘格式：
+      - JSON（polytact engine 的 *_debate_state.json，布尔/空值是 JSON 语法）
+      - Python dict repr（hsliuping 原版 .md，ast.literal_eval）
+    """
+    if not path.is_file():
+        return None
     raw = path.read_text(encoding="utf-8", errors="replace").strip()
     if not (raw.startswith("{") and raw.endswith("}")):
         return None
+    obj = None
     try:
-        obj = ast.literal_eval(raw)
-    except (ValueError, SyntaxError):
-        return None
+        obj = json.loads(raw)
+    except (ValueError, json.JSONDecodeError):
+        try:
+            obj = ast.literal_eval(raw)
+        except (ValueError, SyntaxError):
+            return None
     if not isinstance(obj, dict):
         return None
     debate = Debate(kind=kind, source_file=str(path))
@@ -89,7 +103,8 @@ def load_debate_from_file(path: Path, kind: str = "research") -> Optional[Debate
         debate.turns = parse_history(history)
     # history 缺失时用双方各自的历史拼（顺序丢失但内容保真）
     if not debate.turns:
-        for key in ("bull_history", "bear_history", "risky_history", "safe_history", "neutral_history"):
+        for key in ("bull_history", "bear_history", "risky_history", "safe_history",
+                    "neutral_history", "aggressive_history", "conservative_history"):
             part = obj.get(key) or ""
             if isinstance(part, str) and part.strip():
                 debate.turns += parse_history(part)
@@ -220,9 +235,17 @@ def build_debate_data(cfg, client, task_id: str) -> Optional[dict]:
     if not reports:
         return None
 
-    debate = load_debate_from_file(reports / "research_team_decision.md", "research")
-    if not debate:
-        debate = load_debate_from_file(reports / "risk_management_decision.md", "risk")
+    debate = None
+    # 优先读 polytact engine 写的结构化辩论状态；回落 hsliuping 原版的 dict repr .md
+    for fname, kind in (
+        ("investment_debate_state.json", "research"),
+        ("research_team_decision.md", "research"),
+        ("risk_debate_state.json", "risk"),
+        ("risk_management_decision.md", "risk"),
+    ):
+        debate = load_debate_from_file(reports / fname, kind)
+        if debate:
+            break
     if not debate:
         return None
 

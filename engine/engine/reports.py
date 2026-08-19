@@ -74,6 +74,11 @@ def save_compatible_reports(
             (reports_dir / "bear_researcher.md").write_text(str(debate["bear_history"]), encoding="utf-8")
         if debate.get("judge_decision"):
             (reports_dir / "research_team_decision.md").write_text(str(debate["judge_decision"]), encoding="utf-8")
+        # 原始辩论状态（JSON）：studio 多空辩论回放页的数据源
+        # （.md 是渲染文本，轮次信息已消化；回放需要带 history 的结构化数据）
+        if debate:
+            (reports_dir / "investment_debate_state.json").write_text(
+                json.dumps(debate, ensure_ascii=False, default=str), encoding="utf-8")
 
     risk = final_state.get("risk_debate_state") or {}
     if isinstance(risk, dict):
@@ -85,6 +90,9 @@ def save_compatible_reports(
             (reports_dir / "neutral_analyst.md").write_text(str(risk["neutral_history"]), encoding="utf-8")
         if risk.get("judge_decision"):
             (reports_dir / "risk_management_decision.md").write_text(str(risk["judge_decision"]), encoding="utf-8")
+        if risk:
+            (reports_dir / "risk_debate_state.json").write_text(
+                json.dumps(risk, ensure_ascii=False, default=str), encoding="utf-8")
 
     # metadata
     metadata = {

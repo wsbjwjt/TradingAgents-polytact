@@ -220,6 +220,13 @@ def test_compatible_disk_layout(client, auth_headers):
     assert (reports_dir / "risk_management_decision.md").exists()
     assert (base_dir / "analysis_metadata.json").exists()
 
+    # 辩论回放数据源：原始 state 以 JSON 落盘（.md 是渲染文本，轮次已消化）
+    import json as _json
+    debate = _json.loads((reports_dir / "investment_debate_state.json").read_text(encoding="utf-8"))
+    assert debate["bull_history"] and debate["judge_decision"]
+    risk = _json.loads((reports_dir / "risk_debate_state.json").read_text(encoding="utf-8"))
+    assert risk["aggressive_history"] and risk["judge_decision"]
+
 
 def date_today() -> str:
     from datetime import date
