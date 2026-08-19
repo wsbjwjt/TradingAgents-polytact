@@ -1,0 +1,6 @@
+# 容器内执行的 shell 脚本必须 LF（CRLF 会让 Linux 容器启动失败）
+*.sh text eol=lf
+# Dockerfile 与 compose 文件统一 LF
+Dockerfile* text eol=lf
+docker-compose*.yml text eol=lf
+*.yaml text eol=lf
