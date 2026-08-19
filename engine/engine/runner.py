@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from datetime import date, datetime
 from typing import TYPE_CHECKING, Any, Optional
@@ -90,8 +91,6 @@ def resolve_stock(query: str) -> tuple[str, str]:
     要 mootdx 拉全市场列表，可能超过调用方超时）；表未建好时名称降级为空串，
     并踢一个后台线程去建表，后续请求即可拿到名称。中文名必须查表，同步等。
     """
-    import re
-
     q = (query or "").strip()
     if not q:
         raise ValueError("输入不能为空")
@@ -113,32 +112,57 @@ def resolve_stock(query: str) -> tuple[str, str]:
     return code, name
 
 
+# 上游评级词汇表（vendor/astock portfolio_manager.py 提示词规定的 Rating Scale）
+_RATING_MAP = {
+    "strong buy": "买入", "buy": "买入", "买入": "买入",
+    "overweight": "增持", "增持": "增持",
+    "hold": "持有", "neutral": "持有", "持有": "持有",
+    "underweight": "减持", "减持": "减持",
+    "strong sell": "卖出", "sell": "卖出", "卖出": "卖出",
+}
+_RATING_RE = re.compile(
+    r"(?:rating|recommendation|评级|建议)\s*\*{0,2}\s*[:：]\s*\*{0,2}\s*"
+    r"(strong buy|strong sell|overweight|underweight|neutral|buy|sell|hold|买入|增持|持有|减持|卖出)",
+    re.IGNORECASE,
+)
+_KEYWORD_RE = re.compile(r"买入|增持|卖出|减持|持有")
+_NEGATORS = "不无無勿非莫未"
+_CONF_RE = re.compile(r"(?:置信度|信心度?|confidence)\D{0,12}(\d+(?:\.\d+)?)\s*%?", re.IGNORECASE)
+
+
 def _trade_decision_to_dict(decision_text: str) -> dict[str, Any]:
-    """从 final_trade_decision 文本中尽力解析决策字段。"""
+    """从 final_trade_decision 文本中尽力解析决策字段。
+
+    优先读模型按提示词输出的 "Rating: X" 行；回落到关键词扫描时检查
+    前一个窗口的否定词（避免 "不构成买入理由" 误判为买入）。
+    """
+    text = decision_text or ""
     decision = {
         "action": "持有",
         "confidence": 0.0,
         "risk_score": 0.0,
         "target_price": None,
-        "reasoning": decision_text or "",
+        "reasoning": text,
     }
-    text = (decision_text or "").lower()
-    if "buy" in text or "买入" in text or "强烈看多" in text:
-        decision["action"] = "买入"
-    elif "sell" in text or "卖出" in text or "强烈看空" in text:
-        decision["action"] = "卖出"
+
+    m = _RATING_RE.search(text)
+    if m:
+        decision["action"] = _RATING_MAP[m.group(1).lower()]
     else:
-        decision["action"] = "持有"
+        for kw in _KEYWORD_RE.finditer(text):
+            window = text[max(0, kw.start() - 6):kw.start()]
+            if not any(neg in window for neg in _NEGATORS):
+                decision["action"] = _RATING_MAP[kw.group(0)]
+                break
 
-    # 简单置信度估算：如果有百分比数字就尝试提取
-    import re
-
-    conf_match = re.search(r"(\d+(?:\.\d+)?)%", decision_text or "")
+    # 置信度只认"置信度/confidence"附近的数字，不抓随机百分比
+    conf_match = _CONF_RE.search(text)
     if conf_match:
-        decision["confidence"] = float(conf_match.group(1))
+        conf = float(conf_match.group(1))
+        decision["confidence"] = conf * 100 if conf <= 1 else conf
 
     # 目标价
-    price_match = re.search(r"(?:目标价|target price)[^\d]*(\d+(?:\.\d+)?)", decision_text or "", re.IGNORECASE)
+    price_match = re.search(r"(?:目标价|target price)[^\d]*(\d+(?:\.\d+)?)", text, re.IGNORECASE)
     if price_match:
         decision["target_price"] = float(price_match.group(1))
 

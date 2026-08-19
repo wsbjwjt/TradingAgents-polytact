@@ -260,3 +260,43 @@ def test_task_persist_with_unserializable_result(client, auth_headers):
     assert persisted["status"] == "completed"
     assert persisted["result"]["trade_date"] == "2026-08-19"
     assert persisted["result"]["decision"]["action"] == "持有"
+
+
+# ---------- 决策文本解析 ----------
+
+def test_decision_parse_rating_line_wins_over_negated_keyword():
+    """"不构成买入理由" 不得误判为买入；Rating 行优先。"""
+    from engine.runner import _trade_decision_to_dict
+
+    text = (
+        "**Rating**: Underweight\n\n**Executive Summary**: 合同负债下降23%。"
+        "4.4%股息率提供安全边际，但不构成买入理由。"
+    )
+    d = _trade_decision_to_dict(text)
+    assert d["action"] == "减持"
+    assert d["confidence"] == 0.0   # 无"置信度"字样，不抓随机百分比
+
+
+def test_decision_parse_all_rating_levels():
+    from engine.runner import _trade_decision_to_dict
+
+    for rating, expected in [("Buy", "买入"), ("Overweight", "增持"), ("Hold", "持有"),
+                             ("Underweight", "减持"), ("Sell", "卖出")]:
+        assert _trade_decision_to_dict(f"**Rating**: {rating}")["action"] == expected
+    assert _trade_decision_to_dict("**Recommendation**: 买入")["action"] == "买入"
+
+
+def test_decision_parse_keyword_fallback_with_negation():
+    from engine.runner import _trade_decision_to_dict
+
+    d = _trade_decision_to_dict("反弹力度不足，不宜买入，建议继续持有观察。")
+    assert d["action"] == "持有"
+
+
+def test_decision_parse_confidence_only_near_keyword():
+    from engine.runner import _trade_decision_to_dict
+
+    d = _trade_decision_to_dict("**Rating**: Buy，置信度 75%，目标价 1500 元")
+    assert d["action"] == "买入"
+    assert d["confidence"] == 75.0
+    assert d["target_price"] == 1500.0
