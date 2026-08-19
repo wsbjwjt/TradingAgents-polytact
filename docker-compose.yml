@@ -18,7 +18,9 @@ services:
     volumes:
       - engine-data:/data
     expose:
-      - "8000"   # 仅内网；UFW 不放行此端口
+      - "8000"   # compose 内网可达；公网不放行（UFW 无此端口）
+    ports:
+      - "127.0.0.1:8000:8000"   # 宿主机回环映射，仅供 SSH 登录后的运维调试
 
   studio:
     build:
