@@ -81,8 +81,12 @@ def run_pipeline(
     poll: float = 10.0,
     analysis_date: str | None = None,
     stock_name: str | None = None,
+    on_progress=None,
 ) -> dict[str, Any]:
-    """完整管道：提交分析 -> 等完成 -> (digest -> notify)。返回执行摘要。"""
+    """完整管道：提交分析 -> 等完成 -> (digest -> notify)。返回执行摘要。
+
+    on_progress(status_dict)：等待期间的轮询回调，供 bot 做进度播报。
+    """
     pipeline = pipeline or ["digest", "notify"]
     client = TradingAgentsClient(cfg)
     summary: dict[str, Any] = {"symbol": symbol, "depth": depth, "pipeline": pipeline}
@@ -93,7 +97,7 @@ def run_pipeline(
         )
         summary["task_id"] = task_id
         console.print(f"[cyan]▶ 分析已提交: {symbol} ({depth}) task={task_id}[/cyan]")
-        status = client.wait_for_task(task_id, poll_interval=poll)
+        status = client.wait_for_task(task_id, on_update=on_progress, poll_interval=poll)
         summary["status"] = status.get("status")
         store.upsert_run(
             task_id, symbol=symbol, depth=depth,

@@ -48,6 +48,10 @@ compare:
 replay:
   theme: dark
   exports_dir: data/exports
+# 飞书 bot 行为
+bot:
+  # 确认卡排队 ETA 的单票预估分钟数（按最近一次实测调整；kimi-k2.5+glm-5 约 16）
+  est_minutes_per_stock: 16
 cron:
   timezone: Asia/Shanghai
   jobs:

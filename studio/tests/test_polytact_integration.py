@@ -244,11 +244,15 @@ def test_bot_resolves_candidates_and_runs_pipeline(tmp_path, monkeypatch):
     # 600519 与 贵州茅台解析到同一只 → 只跑一次；你好未识别
     # 入站 resolve 的名称要随管道传递（盘后二次查询会落空）
     assert runs == [("600519", "贵州茅台")]
-    assert len(cards) == 1
+    # 确认卡 + 每只一张进度初始卡
+    assert len(cards) == 2
     title, md, template = cards[0]
     assert template == "green"
-    assert "贵州茅台(600519)" in md
+    assert "贵州茅台（600519）" in md          # 全角括号队列格式
+    assert "预计" in md                        # 排队 ETA 可见
     assert "未识别：`你好`（找不到股票）" in md
+    ptitle, _pmd, ptemplate = cards[1]
+    assert ptitle.startswith("▶️") and "分析中" in ptitle and ptemplate == "wathet"
     store.close()
 
 
@@ -335,7 +339,7 @@ def test_bot_resolve_timeout_degrades_code_passthrough(tmp_path, monkeypatch):
 
     handler(_text_event("m1", "oc_1", "600619，贵州茅台"))
     assert runs == ["600619"]           # 代码降级透传
-    assert len(cards) == 1
+    assert len(cards) == 2              # 确认卡 + 进度初始卡
     title, md, template = cards[0]
     assert template == "green"
     assert "名称校验" in md              # 降级提示可见
@@ -531,3 +535,76 @@ def test_display_uses_fullwidth_parens():
 
     assert _display("300311", "任子行") == "任子行（300311）"
     assert _display("300311", "") == "300311"
+
+
+def test_bot_progress_card_updates_on_stage_change(tmp_path, monkeypatch):
+    """进度卡生命周期：开始发卡 → 阶段变化原地 PATCH（同阶段去重）→ 完成收尾。"""
+    monkeypatch.delenv("FEISHU_CHAT_ID", raising=False)
+    cfg = _cfg(tmp_path, {"app_id": "a", "app_secret": "b"})
+
+    import studio.bot.listener as listener_mod
+    from studio.core.store import Store
+
+    sent = []
+    patches = []
+    monkeypatch.setattr(
+        listener_mod, "_send_card",
+        lambda c, ch, title, md, template="blue": sent.append((title, md, template)) or "om_x",
+    )
+    monkeypatch.setattr(
+        listener_mod, "_patch_card",
+        lambda c, mid, title, md, template="blue": patches.append((mid, title, md, template)),
+    )
+
+    def fake_pipeline(cfg_, store_, symbol, **kw):
+        cb = kw["on_progress"]
+        cb({"current_step": "market", "progress": 8})
+        cb({"current_step": "market", "progress": 10})   # 同阶段不重复播报
+        cb({"current_step": "debate", "progress": 72})
+
+    monkeypatch.setattr(listener_mod, "run_pipeline", fake_pipeline)
+    fake_engine = NS(resolve_stock=lambda tok: ("300311", "任子行", ""))
+    store = Store(cfg.store_path())
+    handler = listener_mod._make_message_handler(cfg, store, None, engine_client=fake_engine)
+    handler(_text_event("m1", "oc_1", "300311"))
+
+    assert [s[2] for s in sent] == ["green", "wathet"]   # 确认卡 + 进度卡
+    assert "任子行（300311）" in sent[0][1] and "预计" in sent[0][1]
+    assert sent[1][0].startswith("▶️") and "分析中" in sent[1][0]
+
+    assert all(p[0] == "om_x" for p in patches)          # 全部更新同一张卡
+    stage_patches = [p for p in patches if "当前阶段" in p[2]]
+    assert len(stage_patches) == 2                        # market 重复被去重
+    assert "市场分析" in stage_patches[0][2] and "8%" in stage_patches[0][2]
+    assert "多空辩论" in stage_patches[1][2] and "72%" in stage_patches[1][2]
+    assert patches[-1][1].startswith("✅") and patches[-1][3] == "green"
+    store.close()
+
+
+def test_bot_pipeline_failure_marks_card_red(tmp_path, monkeypatch):
+    """分析失败：进度卡收尾为红色失败态，不静默。"""
+    monkeypatch.delenv("FEISHU_CHAT_ID", raising=False)
+    cfg = _cfg(tmp_path, {"app_id": "a", "app_secret": "b"})
+
+    import studio.bot.listener as listener_mod
+    from studio.core.store import Store
+
+    patches = []
+    monkeypatch.setattr(listener_mod, "_send_card",
+                        lambda c, ch, title, md, template="blue": "om_x")
+    monkeypatch.setattr(listener_mod, "_patch_card",
+                        lambda c, mid, title, md, template="blue": patches.append((title, md, template)))
+
+    def _boom(*a, **kw):
+        raise RuntimeError("引擎超时")
+
+    monkeypatch.setattr(listener_mod, "run_pipeline", _boom)
+    fake_engine = NS(resolve_stock=lambda tok: ("300311", "任子行", ""))
+    store = Store(cfg.store_path())
+    handler = listener_mod._make_message_handler(cfg, store, None, engine_client=fake_engine)
+    handler(_text_event("m1", "oc_1", "300311"))
+
+    assert len(patches) == 1
+    title, md, template = patches[0]
+    assert title.startswith("❌") and template == "red" and "引擎超时" in md
+    store.close()

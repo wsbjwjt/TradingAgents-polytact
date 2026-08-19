@@ -10,11 +10,18 @@ from __future__ import annotations
 import json
 import os
 import re
-from datetime import date
+import time
+from datetime import date, datetime, timedelta
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 import lark_oapi as lark
-from lark_oapi.api.im.v1 import CreateMessageRequest, CreateMessageRequestBody
+from lark_oapi.api.im.v1 import (
+    CreateMessageRequest,
+    CreateMessageRequestBody,
+    PatchMessageRequest,
+    PatchMessageRequestBody,
+)
 
 from ..core.config import Config
 from ..core.store import Store
@@ -91,7 +98,8 @@ def _build_card(title: str, markdown: str, template: str = "blue") -> str:
 
 def _send_card(
     client: lark.Client, chat_id: str, title: str, markdown: str, template: str = "blue"
-) -> None:
+) -> str:
+    """发卡并返回 message_id（供后续原地更新进度）。"""
     content = _build_card(title, markdown, template)
     req = (
         CreateMessageRequest.builder()
@@ -108,6 +116,24 @@ def _send_card(
     resp = client.im.v1.message.create(req)
     if not resp.success():
         raise RuntimeError(f"飞书发消息失败: {getattr(resp, 'msg', resp)}")
+    data = getattr(resp, "data", None)
+    return str(getattr(data, "message_id", "") or "")
+
+
+def _patch_card(
+    client: lark.Client, message_id: str, title: str, markdown: str, template: str = "blue"
+) -> None:
+    """原地更新已发出的卡片（进度播报的核心：一张卡随分析阶段刷新）。"""
+    content = _build_card(title, markdown, template)
+    req = (
+        PatchMessageRequest.builder()
+        .message_id(message_id)
+        .request_body(PatchMessageRequestBody.builder().content(content).build())
+        .build()
+    )
+    resp = client.im.v1.message.patch(req)
+    if not resp.success():
+        raise RuntimeError(f"飞书更新消息失败: {getattr(resp, 'msg', resp)}")
 
 
 def _help_md() -> str:
@@ -116,7 +142,7 @@ def _help_md() -> str:
         "示例：`600519, 000001，贵州茅台`\n\n"
         "- 6 位数字代码直接识别\n"
         "- 中文股票名由引擎解析（如 `贵州茅台`）\n"
-        "- 预计每只分析 5-15 分钟"
+        "- 逐只分析、即完即推，确认卡会给出每只的预计完成时间"
     )
 
 
@@ -129,15 +155,57 @@ def _format_failed(failed: list[tuple[str, str]]) -> str:
     return "、".join(lines)
 
 
-def _confirm_md(resolved: list[tuple[str, str]], failed: list[tuple[str, str]]) -> str:
-    items = "、".join(f"{name}({code})" if name else code for code, name in resolved)
+def _who(code: str, name: str) -> str:
+    return f"{name}（{code}）" if name else code
+
+
+def _est_minutes(cfg: Config) -> int:
+    """单票预估分钟数：config 可覆盖，默认按最近一次实测。"""
+    try:
+        return int(cfg.get("bot.est_minutes_per_stock", 16) or 16)
+    except (TypeError, ValueError):
+        return 16
+
+
+def _confirm_md(
+    cfg: Config, resolved: list[tuple[str, str]], failed: list[tuple[str, str]]
+) -> str:
+    """确认卡 = 排队视图：序号 + 预计完成时刻，让等待可见。"""
+    tz = ZoneInfo(str(cfg.get("cron.timezone", "Asia/Shanghai") or "Asia/Shanghai"))
+    now = datetime.now(tz)
+    est = _est_minutes(cfg)
+    lines = []
+    for i, (code, name) in enumerate(resolved, 1):
+        eta = (now + timedelta(minutes=est * i)).strftime("%H:%M")
+        lines.append(f"{i}. {_who(code, name)} — 预计 {eta} 完成")
     md = (
-        f"已受理 **{len(resolved)} 只**：{items}\n\n"
-        "开始分析，预计每只 5-15 分钟。完成后会把开盘前简报推送到配置的飞书群。"
+        f"已受理 **{len(resolved)} 只**，逐只分析、即完即推（每只约 {est} 分钟）：\n\n"
+        + "\n".join(lines)
     )
     if failed:
         md += f"\n\n⚠️ 未识别：{_format_failed(failed)}"
     return md
+
+
+# 引擎 current_step → 中文阶段名（进度卡显示用）
+_STAGE_LABELS = {
+    "market": "市场分析",
+    "social": "情绪分析",
+    "news": "新闻分析",
+    "fundamentals": "基本面分析",
+    "policy": "政策分析",
+    "hot_money": "游资分析",
+    "lockup": "解禁分析",
+    "quality_gate": "质量门禁",
+    "debate": "多空辩论",
+    "trader": "交易员决策",
+    "risk": "风控辩论",
+    "pm": "组合经理裁决",
+}
+
+
+def _stage_label(step: str) -> str:
+    return _STAGE_LABELS.get(step, step)
 
 
 def _sender_id(sender) -> str:
@@ -263,7 +331,7 @@ def _make_message_handler(
             _send_card(lark_client, chat_id, "未识别到股票", md, template="grey")
             return
 
-        confirm = _confirm_md(resolved, failed)
+        confirm = _confirm_md(cfg, resolved, failed)
         if degraded:
             confirm += "\n\nℹ️ 名称校验服务暂慢，6 位代码已直接受理"
         _send_card(
@@ -272,7 +340,37 @@ def _make_message_handler(
         )
 
         today = date.today().isoformat()
-        for symbol, name in resolved:
+        total = len(resolved)
+        for idx, (symbol, name) in enumerate(resolved, 1):
+            who = _who(symbol, name)
+            title = f"[{idx}/{total}] {who}"
+            # 进度卡：发不出不挡分析；发出后随引擎阶段原地刷新
+            try:
+                mid = _send_card(
+                    lark_client, chat_id, f"▶️ {title} 分析中",
+                    "正在初始化…", template="wathet",
+                )
+            except Exception:
+                mid = ""
+            last_step = [""]
+
+            def _on_progress(st, _mid=mid, _title=title):
+                if not _mid:
+                    return
+                step = str(st.get("current_step") or "")
+                if not step or step == last_step[0]:
+                    return
+                last_step[0] = step
+                try:
+                    _patch_card(
+                        lark_client, _mid, f"▶️ {_title} 分析中",
+                        f"当前阶段：**{_stage_label(step)}**（{st.get('progress') or 0}%）",
+                        template="wathet",
+                    )
+                except Exception:
+                    pass
+
+            t0 = time.monotonic()
             try:
                 run_pipeline(
                     cfg,
@@ -282,9 +380,27 @@ def _make_message_handler(
                     pipeline=["digest", "notify"],
                     analysis_date=today,
                     stock_name=name,
+                    on_progress=_on_progress,
                 )
+                if mid:
+                    minutes = int((time.monotonic() - t0) / 60)
+                    try:
+                        _patch_card(
+                            lark_client, mid, f"✅ {title} 分析完成",
+                            f"用时约 {minutes} 分钟，开盘前简报已推送。", template="green",
+                        )
+                    except Exception:
+                        pass
             except Exception as exc:  # 单只失败不影响下一只
                 print(f"[bot] 分析 {symbol} 失败: {exc}")
+                if mid:
+                    try:
+                        _patch_card(
+                            lark_client, mid, f"❌ {title} 分析失败",
+                            f"错误：{str(exc)[:200]}", template="red",
+                        )
+                    except Exception:
+                        pass
 
     return on_message
 
