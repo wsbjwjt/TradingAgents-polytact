@@ -7,7 +7,7 @@ set -e
 if [ "$#" -eq 0 ] || { [ "$#" -eq 1 ] && [ "$1" = "cron" ]; }; then
     studio report serve --port "${STUDIO_REPORT_PORT:-8890}" &
     # 飞书长连接必须单实例（多实例随机投递）；崩了自动重启
-    (while true; do studio bot || true; sleep 5; done) &
+    (while true; do studio bot run || true; sleep 5; done) &
     exec studio cron
 fi
 
