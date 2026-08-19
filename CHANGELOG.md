@@ -6,6 +6,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Breaking changes within the 0.x line are called out explicitly.
 
+## [0.5.15] — 2026-08-19
+
+### 新增：`role_llms` 支持按角色配置 `api_key`（#94）
+
+多网关场景下，此前 `openai_compatible` provider 只能从单一环境变量
+（`OPENAI_COMPATIBLE_API_KEY` / `OPENAI_API_KEY`）读取密钥，无法让不同角色走
+凭据不同的中转/网关。现在每个角色可以在 `role_llms` 里单独指定 `api_key`：
+
+```python
+"role_llms": {
+    "bull":  {"provider": "openai_compatible", "backend_url": "https://relay-a/v1", "api_key": "key-a", "model": "..."},
+    "bear":  {"provider": "openai_compatible", "backend_url": "https://relay-b/v1", "api_key": "key-b", "model": "..."},
+}
+```
+
+优先级：**角色内 `api_key` > `OPENAI_COMPATIBLE_API_KEY` > `OPENAI_API_KEY`**。
+不配置时行为与之前完全一致，只用单一网关的用户不受影响。
+
+一个容易忽略但已处理的点：**客户端缓存键加入了 `api_key`**。否则
+provider / model / base_url 相同而密钥不同的两个角色会复用同一个 client 实例，
+后建的角色会静默用错凭据且不报错。
+
+感谢 [@k176060444-lgtm](https://github.com/k176060444-lgtm) —— PR 带了两条回归测试，
+分别覆盖「角色密钥优先」与「未配置时回落环境变量」两条路径。
+本地在 Python 3.12 跑完整套件：**370 passed / 14 skipped**（skip 均为可选依赖 `claude-agent-sdk`）。
+
 ## [0.5.14] — 2026-08-09
 
 ### 修复：连字符分隔符被当成构词，评级被静默丢弃

@@ -187,8 +187,12 @@ class OpenAIClient(BaseLLMClient):
                     "（例如 https://your-relay.example/v1）。"
                 )
             llm_kwargs["base_url"] = self.base_url
+            # Per-role api_key (from role_llms spec) wins over env vars, so
+            # several OpenAI-compatible gateways with different keys can run
+            # side by side (e.g. opencode-go + a local proxy relay).
             api_key = (
-                os.environ.get("OPENAI_COMPATIBLE_API_KEY")
+                self.kwargs.get("api_key")
+                or os.environ.get("OPENAI_COMPATIBLE_API_KEY")
                 or os.environ.get("OPENAI_API_KEY")
             )
             if api_key:
