@@ -246,4 +246,3 @@ vendor 更新：`git subtree pull --prefix=vendor/astock <上游> main --squash`
 ## 9. 致谢
 
 - [TradingAgents-astock](https://github.com/simonlin1212/TradingAgents-astock)（A 股分析引擎）
-- [TradingAgents-CN](https://github.com/hsliuping/TradingAgents-CN) 及其上游 [TradingAgents](https://github.com/TauricResearch/TradingAgents)
