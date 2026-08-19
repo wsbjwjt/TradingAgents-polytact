@@ -194,7 +194,30 @@ def _md_to_html(text: str) -> str:
         return "\n".join(out)
 
 
-def split_sections(md_text: str) -> list[tuple[str, str]]:
+_H1_RE = re.compile(r"(?m)^#\s+(.+?)\s*$")
+
+
+def _normalize_h1(body: str, symbol: str, name: str) -> str:
+    """把分析师自报的 H1 统一为「中文名（代码）×××报告」。
+
+    模型写标题格式漂移（只有代码 / "代码 名字" 乱序），渲染层归一；
+    已是规范格式、无 H1 或剥完不剩报告类型词的，原样保留。
+    """
+    if not symbol or not name:
+        return body
+    m = _H1_RE.search(body)
+    if not m:
+        return body
+    headline = m.group(1)
+    if f"{name}（{symbol}）" in headline or f"{name}({symbol})" in headline:
+        return body
+    tail = headline.replace(symbol, "").replace(name, "").strip(" -—_·:：")
+    if len(tail) < 4:
+        return body
+    return body[:m.start()] + f"# {name}（{symbol}）{tail}" + body[m.end():]
+
+
+def split_sections(md_text: str, symbol: str = "", name: str = "") -> list[tuple[str, str]]:
     """把 fetcher 拼接的 '## <stem>\\n...' 全文切成 (label, markdown) 列表。"""
     parts = re.split(r"(?m)^## ([A-Za-z0-9_]+)\s*$", md_text)
     found: list[tuple[int, str, str]] = []
@@ -202,12 +225,13 @@ def split_sections(md_text: str) -> list[tuple[str, str]]:
         stem = parts[i]
         body = (parts[i + 1] if i + 1 < len(parts) else "").replace("\n---\n", "\n").strip()
         if body:
-            found.append((_STEM_ORDER.get(stem, 99), _STEM_LABELS.get(stem, stem), body))
+            found.append((_STEM_ORDER.get(stem, 99), _STEM_LABELS.get(stem, stem),
+                          _normalize_h1(body, symbol, name)))
     # 叙事顺序：分析师 -> 多空辩论 -> 交易 -> 风控 -> 最终决策（与回放页一致）
     found.sort(key=lambda t: t[0])
     sections = [(label, body) for _order, label, body in found]
     if not sections:  # 单一正文（如 API 摘要兜底）
-        sections = [("报告正文", md_text)]
+        sections = [("报告正文", _normalize_h1(md_text, symbol, name))]
     return sections
 
 
@@ -236,10 +260,11 @@ def export_report_page(cfg, client, task_id: str, out_dir: Optional[Path] = None
     out_dir.mkdir(parents=True, exist_ok=True)
     doc = fetch_report(client, task_id, _ta_dir(cfg))
     name = _lookup_name(cfg, client, doc.symbol)
+    sections = split_sections(doc.text, symbol=doc.symbol, name=name)
     title = f"{name or doc.symbol}（{doc.symbol}）分析报告"
-    sub = f"task {task_id} · {doc.chars} 字 · {len(split_sections(doc.text))} 份子报告"
+    sub = f"task {task_id} · {doc.chars} 字 · {len(sections)} 份子报告"
     path = out_dir / f"{task_id}.html"
-    path.write_text(build_report_page(title, sub, split_sections(doc.text)), encoding="utf-8")
+    path.write_text(build_report_page(title, sub, sections), encoding="utf-8")
     return path
 
 

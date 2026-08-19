@@ -229,7 +229,7 @@ def test_bot_resolves_candidates_and_runs_pipeline(tmp_path, monkeypatch):
     runs = []
     monkeypatch.setattr(
         listener_mod, "run_pipeline",
-        lambda cfg_, store_, symbol, **kw: runs.append(symbol),
+        lambda cfg_, store_, symbol, **kw: runs.append((symbol, kw.get("stock_name"))),
     )
 
     table = {
@@ -242,7 +242,8 @@ def test_bot_resolves_candidates_and_runs_pipeline(tmp_path, monkeypatch):
 
     handler(_text_event("m1", "oc_1", "600519，贵州茅台 你好"))
     # 600519 与 贵州茅台解析到同一只 → 只跑一次；你好未识别
-    assert runs == ["600519"]
+    # 入站 resolve 的名称要随管道传递（盘后二次查询会落空）
+    assert runs == [("600519", "贵州茅台")]
     assert len(cards) == 1
     title, md, template = cards[0]
     assert template == "green"
@@ -468,3 +469,65 @@ def test_fetch_report_raises_when_nothing_found(tmp_path):
 
     with _pytest.raises(FileNotFoundError, match="tid-z"):
         fetch_report(FakeClient(), "tid-z", ta_dir=tmp_path)
+
+
+# ---------- 报告页：中文节名 + H1 标题归一 ----------
+
+def test_report_sections_all_stems_have_chinese_labels():
+    """17 个报告 stem 都有中文展示名，不漏出裸英文 stem。"""
+    from studio.notify.report_server import split_sections
+
+    stems = ["market_report", "fundamentals_report", "news_report", "sentiment_report",
+             "policy_report", "hot_money_report", "lockup_report", "bull_researcher",
+             "bear_researcher", "research_team_decision", "trader_investment_plan",
+             "investment_plan", "risky_analyst", "safe_analyst", "neutral_analyst",
+             "risk_management_decision", "final_trade_decision"]
+    md = "\n\n".join(f"## {s}\n内容{s}" for s in stems)
+    sections = split_sections(md)
+    labels = [label for label, _ in sections]
+    assert len(sections) == len(stems)
+    for stem in stems:
+        assert stem not in labels, f"{stem} 缺中文标签"
+
+
+def test_normalize_h1_code_only_title():
+    """"# 300311 技术面分析报告" → "# 任子行（300311）技术面分析报告"。"""
+    from studio.notify.report_server import split_sections
+
+    [(label, body)] = split_sections("## market_report\n# 300311 技术面分析报告\n\n正文",
+                                     symbol="300311", name="任子行")
+    assert label == "市场分析师"
+    assert body.startswith("# 任子行（300311）技术面分析报告")
+
+
+def test_normalize_h1_code_name_order_title():
+    """"# 300311 任子行 新闻与政策分析报告" → 统一格式。"""
+    from studio.notify.report_server import split_sections
+
+    [(_, body)] = split_sections("## news_report\n# 300311 任子行 新闻与政策分析报告\n\n正文",
+                                 symbol="300311", name="任子行")
+    assert body.startswith("# 任子行（300311）新闻与政策分析报告")
+
+
+def test_normalize_h1_already_good_or_absent_untouched():
+    """已规范的 H1、无 H1 正文、无名可查时都不动。"""
+    from studio.notify.report_server import split_sections
+
+    [(_, body)] = split_sections("## bull_researcher\n# 🐂 任子行（300311）牛市投资论点\n\n正文",
+                                 symbol="300311", name="任子行")
+    assert body.startswith("# 🐂 任子行（300311）牛市投资论点")
+
+    [(_, body2)] = split_sections("## fundamentals_report\n根据获取到的数据，直接开头",
+                                  symbol="300311", name="任子行")
+    assert body2.startswith("根据获取到的数据")
+
+    [(_, body3)] = split_sections("## market_report\n# 300311 技术面分析报告",
+                                  symbol="300311", name="")
+    assert body3.startswith("# 300311 技术面分析报告")
+
+
+def test_display_uses_fullwidth_parens():
+    from studio.notify.render import _display
+
+    assert _display("300311", "任子行") == "任子行（300311）"
+    assert _display("300311", "") == "300311"

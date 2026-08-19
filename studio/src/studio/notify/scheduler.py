@@ -80,6 +80,7 @@ def run_pipeline(
     deep_model: str | None = None,
     poll: float = 10.0,
     analysis_date: str | None = None,
+    stock_name: str | None = None,
 ) -> dict[str, Any]:
     """完整管道：提交分析 -> 等完成 -> (digest -> notify)。返回执行摘要。"""
     pipeline = pipeline or ["digest", "notify"]
@@ -101,11 +102,13 @@ def run_pipeline(
         )
 
         channels = build_channels(cfg) if "notify" in pipeline else []
-        name = ""
-        try:
-            name = client.stock_name(symbol)
-        except Exception:
-            pass
+        # 名称优先用入站 resolve 的结果（盘后 mootdx 熔断时二次查询会落空）
+        name = stock_name or ""
+        if not name:
+            try:
+                name = client.stock_name(symbol)
+            except Exception:
+                pass
         if status.get("status") == "completed":
             if "digest" in pipeline:
                 doc = fetch_report(client, task_id, _ta_dir(cfg))

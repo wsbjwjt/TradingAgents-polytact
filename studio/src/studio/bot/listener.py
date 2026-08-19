@@ -272,7 +272,7 @@ def _make_message_handler(
         )
 
         today = date.today().isoformat()
-        for symbol, _name in resolved:
+        for symbol, name in resolved:
             try:
                 run_pipeline(
                     cfg,
@@ -281,6 +281,7 @@ def _make_message_handler(
                     depth="标准",
                     pipeline=["digest", "notify"],
                     analysis_date=today,
+                    stock_name=name,
                 )
             except Exception as exc:  # 单只失败不影响下一只
                 print(f"[bot] 分析 {symbol} 失败: {exc}")

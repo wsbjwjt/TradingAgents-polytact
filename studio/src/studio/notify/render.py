@@ -5,7 +5,7 @@ from typing import Optional
 
 
 def _display(symbol: str, name: str) -> str:
-    return f"{name}({symbol})" if name else symbol
+    return f"{name}（{symbol}）" if name else symbol
 
 
 def render_digest_message(symbol: str, digest_text: str, source_url: str = "",
