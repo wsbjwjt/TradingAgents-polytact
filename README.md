@@ -3,7 +3,7 @@
 飞书驱动的 A 股晨报系统：早上在飞书里发一行逗号分隔的股票代码，系统逐票完成多智能体投研分析（7 分析师 + 多空辩论 + 交易员 + 风控 + 裁决），把浓缩成约 200 字的开盘前简报推回飞书，卡片按钮直达完整报告与多空辩论回放。
 
 - 引擎：[TradingAgents-astock](https://github.com/simonlin1212/TradingAgents-astock)（git subtree vendor 进本仓库，FastAPI 包装为独立 HTTP 服务）
-- 外壳：移植自 [TradingAgents-CN-studio](https://github.com/frank-quant/TradingAgents-CN-studio)（digest / notify / compare / replay / cron / 报告服务；通知渠道只留飞书，新增飞书长连接入站机器人）
+- 外壳（本仓库 `studio/`）：晨报提炼、飞书推送与入站机器人、多模型对比、辩论回放、定时调度、报告服务
 - 部署：云服务器 Docker Compose（两个容器），或本机无 Docker 裸跑
 
 ## 目录
@@ -245,6 +245,5 @@ vendor 更新：`git subtree pull --prefix=vendor/astock <上游> main --squash`
 
 ## 9. 致谢
 
-- [TradingAgents-CN-studio](https://github.com/frank-quant/TradingAgents-CN-studio)（外壳移植来源）
 - [TradingAgents-astock](https://github.com/simonlin1212/TradingAgents-astock)（A 股分析引擎）
 - [TradingAgents-CN](https://github.com/hsliuping/TradingAgents-CN) 及其上游 [TradingAgents](https://github.com/TauricResearch/TradingAgents)
