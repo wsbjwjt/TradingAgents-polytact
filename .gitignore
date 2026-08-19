@@ -1,0 +1,23 @@
+# 凭据与本地环境
+.env
+*.env.local
+!.env.example
+
+# 运行时数据
+.prototype/
+data/
+studio_data/
+reports/
+*.db
+*.sqlite3
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
+build/
+dist/
+
+# 代理工作区
+.claude/worktrees/
