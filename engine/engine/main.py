@@ -236,3 +236,25 @@ async def stock_basic_info(
         "data": {"symbol": symbol, "name": name},
         "message": "获取股票基本信息成功",
     }
+
+
+@app.get("/api/stock-data/resolve/{query}", response_model=StandardResponse)
+async def stock_resolve(
+    query: str,
+    user: str = Depends(require_auth),
+) -> dict[str, Any]:
+    """把代码或中文名解析为 (代码, 名称)，供飞书 bot 入站校验。
+
+    无法识别时返回 success=False（消息面向用户，可直接展示），HTTP 状态仍为 200。
+    """
+    from engine.runner import resolve_stock
+
+    try:
+        code, name = resolve_stock(query)
+    except ValueError as exc:
+        return {"success": False, "data": None, "message": str(exc)}
+    return {
+        "success": True,
+        "data": {"symbol": code, "name": name, "query": query},
+        "message": "解析成功",
+    }

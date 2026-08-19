@@ -21,12 +21,23 @@ console = Console()
 
 
 def build_channels(cfg: Config):
-    """构建推送渠道。键支持 "type#别名" 形式，同类型可配多个实例（如两个飞书群）。"""
+    """构建推送渠道。键支持 "type#别名" 形式，同类型可配多个实例（如两个飞书群）。
+
+    feishu 渠道缺 chat_id 时，尝试注入 bot 运行时学习到的值（用户给机器人发过消息即自动接线）。
+    """
     channels = []
     for name, options in (cfg.get("notify.channels", {}) or {}).items():
         ctype, _, alias = name.partition("#")
+        options = dict(options or {})
+        if ctype == "feishu" and not options.get("chat_id"):
+            try:
+                learned = Store(cfg.store_path()).get_kv("feishu_chat_id")
+                if learned:
+                    options["chat_id"] = learned
+            except Exception:
+                pass
         try:
-            channels.append(registry.build(ctype, options or {}, alias=alias))
+            channels.append(registry.build(ctype, options, alias=alias))
         except Exception as e:
             console.print(f"[yellow]⚠ 跳过渠道 {name}: {e}[/yellow]")
     return channels
@@ -45,13 +56,18 @@ def push_all(channels, title: str, body: str, markdown: str = "",
 
 
 def _report_urls(cfg, task_id: str) -> tuple[str, str, str]:
-    """报告详情服务的链接前缀来自配置；未配置则返回空（卡片就不带按钮）。"""
+    """报告详情服务的链接前缀来自配置；未配置则返回空（卡片就不带按钮）。
+
+    链接带 HMAC 令牌（G2 决策：公网报告服务 + 每报告随机令牌）。
+    """
     prefix = str(cfg.get("notify.report_url_prefix", "") or "").rstrip("/")
     if not prefix:
         return "", "", ""
-    return (f"{prefix}/report/{task_id}",
-            f"{prefix}/debate/{task_id}",
-            f"{prefix}/replay/{task_id}")
+    from .tokens import sign
+    q = f"?token={sign(task_id)}"
+    return (f"{prefix}/report/{task_id}{q}",
+            f"{prefix}/debate/{task_id}{q}",
+            f"{prefix}/replay/{task_id}{q}")
 
 
 def run_pipeline(

@@ -1,0 +1,47 @@
+name: polytact
+
+# TradingAgents-polytact 一体化部署：
+#   engine  —— astock 引擎的 FastAPI 包装（仅 compose 内网，不公网暴露）
+#   studio  —— 外壳（飞书 bot 入站 + cron 调度 + digest + 报告服务 :8890）
+# 用法：cp .env.example .env 填好凭据；cp studio/studio.yaml.example studio.yaml 按需调整；
+#       docker compose up -d --build
+
+services:
+  engine:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.engine
+    image: polytact-engine
+    container_name: polytact-engine
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - engine-data:/data
+    expose:
+      - "8000"   # 仅内网；UFW 不放行此端口
+
+  studio:
+    build:
+      context: ./studio
+      dockerfile: docker/Dockerfile.studio
+    image: polytact-studio
+    container_name: polytact-studio
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      STUDIO_CONFIG: /data/studio/studio.yaml
+      STUDIO__API__BASE_URL: http://engine:8000
+      STUDIO__DATA__TA_DIR: /data/ta
+      STUDIO__NOTIFY__REPORT_URL_PREFIX: ${REPORT_URL_PREFIX}
+    volumes:
+      - ./studio.yaml:/data/studio/studio.yaml:ro   # store/exports 随之落在 studio-data 卷
+      - engine-data:/data/ta:ro                     # 只读挂引擎报告（零侵入原则）
+      - studio-data:/data/studio
+    ports:
+      - "8890:8890"   # 报告服务（公网，链接带 HMAC 令牌）
+    depends_on:
+      - engine
+
+volumes:
+  engine-data:
+  studio-data:

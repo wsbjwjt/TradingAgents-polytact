@@ -57,6 +57,10 @@ CREATE TABLE IF NOT EXISTS processed_messages (
     content     TEXT,
     created_at  TEXT DEFAULT (datetime('now'))
 );
+CREATE TABLE IF NOT EXISTS kv (
+    key         TEXT PRIMARY KEY,
+    value       TEXT
+);
 """
 
 T = TypeVar("T")
@@ -174,6 +178,18 @@ class Store:
             (since_iso,),
         ).fetchone()
         return bool(row)
+
+    @_locked
+    def set_kv(self, key: str, value: str) -> None:
+        self.conn.execute(
+            "INSERT OR REPLACE INTO kv(key, value) VALUES(?,?)", (key, value)
+        )
+        self.conn.commit()
+
+    @_locked
+    def get_kv(self, key: str) -> Optional[str]:
+        row = self.conn.execute("SELECT value FROM kv WHERE key=?", (key,)).fetchone()
+        return str(row[0]) if row else None
 
     @_locked
     def close(self):

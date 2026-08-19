@@ -78,6 +78,38 @@ def test_basic_info(client, auth_headers):
     assert "600519" in data["data"]["name"]
 
 
+def test_resolve_accepts_six_digit_code(client, auth_headers):
+    """resolve 端点：mock 模式下 6 位代码解析成功。"""
+    resp = client.get("/api/stock-data/resolve/600519", headers=auth_headers)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["success"] is True
+    assert body["data"]["symbol"] == "600519"
+    assert "模拟" in body["data"]["name"]
+
+
+def test_resolve_rejects_chinese_in_mock(client, auth_headers):
+    """resolve 端点：mock 模式不解析中文名，success=False 且消息面向用户。"""
+    resp = client.get("/api/stock-data/resolve/%E8%8C%85%E5%8F%B0", headers=auth_headers)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["success"] is False
+    assert "茅台" in body["message"]
+
+
+def test_resolve_rejects_garbage(client, auth_headers):
+    """resolve 端点：非代码非中文的垃圾输入 success=False。"""
+    resp = client.get("/api/stock-data/resolve/abc", headers=auth_headers)
+    assert resp.status_code == 200
+    assert resp.json()["success"] is False
+
+
+def test_resolve_requires_auth(client):
+    """resolve 端点需要鉴权。"""
+    resp = client.get("/api/stock-data/resolve/600519")
+    assert resp.status_code in (401, 403)
+
+
 def test_single_analysis_lifecycle(client, auth_headers):
     """提交 -> 状态 pending -> 等待完成 -> result 形状正确。"""
     resp = client.post(

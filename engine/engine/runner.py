@@ -63,6 +63,39 @@ def resolve_stock_name(symbol: str) -> str:
     return _code_to_name.get(symbol, "")
 
 
+def resolve_stock(query: str) -> tuple[str, str]:
+    """把用户输入（6 位代码 / 带市场前缀代码 / 中文名）解析为 (代码, 名称)。
+
+    无法解析时抛 ValueError（消息已带面向用户的说明，可直接透传）。
+    mock 模式只接受 6 位数字代码。
+    """
+    import re
+
+    q = (query or "").strip()
+    if not q:
+        raise ValueError("输入不能为空")
+    if settings.is_mock:
+        if re.fullmatch(r"\d{6}", q):
+            return q, f"{q}（模拟）"
+        raise ValueError(f"找不到股票 '{q}'（mock 模式只接受 6 位代码）")
+
+    # 延迟导入 astock；resolve_ticker 覆盖代码规范化与中文名精确/唯一模糊匹配
+    from tradingagents.dataflows.a_stock import (
+        _build_name_code_map,
+        _code_to_name,
+        resolve_ticker,
+    )
+
+    code = resolve_ticker(q)
+    # 代码解析不依赖名称映射表；mootdx 不可达时名称降级为空串但代码仍可用
+    try:
+        _build_name_code_map()
+        name = (_code_to_name or {}).get(code, "")
+    except ValueError:
+        name = ""
+    return code, name
+
+
 def _trade_decision_to_dict(decision_text: str) -> dict[str, Any]:
     """从 final_trade_decision 文本中尽力解析决策字段。"""
     decision = {

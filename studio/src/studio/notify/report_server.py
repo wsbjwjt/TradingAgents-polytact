@@ -268,21 +268,39 @@ def make_handler(cfg, client_factory):
 
     class Handler(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
+            from urllib.parse import parse_qs, urlparse
+
+            from . import tokens
+
             try:
-                path = self.path.split("?")[0].rstrip("/")
+                parsed = urlparse(self.path)
+                path = parsed.path.rstrip("/")
+                token = (parse_qs(parsed.query).get("token") or [""])[0]
                 if path in ("", "/index"):
+                    if not tokens.verify(tokens.INDEX_SCOPE, token):
+                        self._send(403, "403 Forbidden: 无效令牌")
+                        return
                     body = self._index()
                     self._send(200, body)
                 elif path.startswith("/report/"):
                     task_id = path[len("/report/"):]
+                    if not tokens.verify(task_id, token):
+                        self._send(403, "403 Forbidden: 无效令牌")
+                        return
                     page = self._cached(f"report:{task_id}", lambda: self._report(task_id))
                     self._send(200, page.read_text(encoding="utf-8"))
                 elif path.startswith("/replay/"):
                     task_id = path[len("/replay/"):]
+                    if not tokens.verify(task_id, token):
+                        self._send(403, "403 Forbidden: 无效令牌")
+                        return
                     page = self._cached(f"replay:{task_id}", lambda: self._replay(task_id))
                     self._send(200, page.read_text(encoding="utf-8"))
                 elif path.startswith("/debate/"):
                     task_id = path[len("/debate/"):]
+                    if not tokens.verify(task_id, token):
+                        self._send(403, "403 Forbidden: 无效令牌")
+                        return
                     page = self._cached(f"debate:{task_id}", lambda: self._debate(task_id))
                     self._send(200, page.read_text(encoding="utf-8"))
                 else:
@@ -334,10 +352,13 @@ def make_handler(cfg, client_factory):
             return out
 
         def _index(self) -> str:
+            from . import tokens
+
             rows = []
             for run in store.latest_runs(20):
                 sym = run.get("symbol") or "?"
-                rows.append(f'<li><a href="/report/{run["task_id"]}">{sym}</a> '
+                tid = run["task_id"]
+                rows.append(f'<li><a href="/report/{tid}?token={tokens.sign(tid)}">{sym}</a> '
                             f'· {run.get("status")} · {run.get("created_at","")}</li>')
             listing = "\n".join(rows) or "<li>暂无记录</li>"
             return build_report_page("报告索引", "最近的分析任务",
@@ -359,4 +380,8 @@ def make_handler(cfg, client_factory):
 
 def serve(cfg, port: int = 8890, host: str = "0.0.0.0") -> None:
     from ..core.client import TradingAgentsClient
+    from . import tokens
+
+    # 公网服务 fail closed：没有令牌密钥就拒绝启动（G2 决策）
+    tokens.sign(tokens.INDEX_SCOPE)
     http.server.ThreadingHTTPServer((host, port), make_handler(cfg, TradingAgentsClient)).serve_forever()

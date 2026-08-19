@@ -4,28 +4,30 @@ api:
   password: ${ENGINE_PASSWORD}             # engine 登录密码
   timeout: 30
 llm:
-  base_url: https://open.bigmodel.cn/api/paas/v4
-  api_key: ${ZHIPU_API_KEY}
-  model: glm-5.3
+  # digest 浓缩用的 LLM：默认走百炼 Coding Plan（OpenAI 兼容），与引擎同一份凭据
+  base_url: ${BACKEND_URL}
+  api_key: ${OPENAI_COMPATIBLE_API_KEY}
+  model: qwen3.7-plus
   max_tokens: 4096
   temperature: 0.3
-  extra_body:
-    reasoning_effort: low
 data:
-  # engine 落盘根目录，包含 analysis_results/<symbol>/<date>/reports/*.md
-  ta_dir: /path/to/engine/analysis_results
+  # engine 落盘根目录（其下有 analysis_results/<symbol>/<date>/reports/*.md）。
+  # docker-compose 部署时引擎数据卷只读挂载在 /data/ta
+  ta_dir: /data/ta
 notify:
-  report_url_prefix: http://localhost:8890
+  report_url_prefix: http://localhost:8890   # 生产改成 http://<服务器IP>:8890
   channels:
     feishu:
-      # 群机器人 webhook：用于 cron / bot 分析完成后推送 digest 卡片
-      webhook: ${FEISHU_WEBHOOK}
-      secret: ''
-      # 企业自建应用凭证：studio bot 长连接必需
+      # 企业自建应用凭证：bot 长连接入站 + app 模式出站推送（推荐，单一身份）
       app_id: ${FEISHU_APP_ID}
       app_secret: ${FEISHU_APP_SECRET}
+      # 推送目标会话；可留空——机器人收到第一条用户消息后自动学习
+      chat_id: ${FEISHU_CHAT_ID}
       # chat_id 白名单，空列表=不限制；私聊/群聊的 chat_id 均可配
       allowed_chat_ids: []
+      # 可选备用出站：群自定义机器人 webhook（不配则只走 app 模式）
+      # webhook: https://open.feishu.cn/open-apis/bot/v2/hook/xxx
+      # secret: ''
 compare:
   defaults:
     depth: 标准
