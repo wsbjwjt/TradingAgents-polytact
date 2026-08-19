@@ -300,3 +300,66 @@ def test_decision_parse_confidence_only_near_keyword():
     assert d["action"] == "买入"
     assert d["confidence"] == 75.0
     assert d["target_price"] == 1500.0
+
+
+# ---------- 名称解析：东财兜底 ----------
+
+def _fake_astock_modules(monkeypatch, code_to_name=None, em_payload=None, em_raises=False):
+    """engine 测试环境没有真 astock：注入假 tradingagents.dataflows.a_stock。"""
+    import sys
+    import types
+
+    class _Resp:
+        def json(self):
+            return {"data": em_payload or {}}
+
+    def _em_get(*a, **kw):
+        if em_raises:
+            raise ConnectionError("boom")
+        return _Resp()
+
+    mod_stock = types.ModuleType("tradingagents.dataflows.a_stock")
+    mod_stock._code_to_name = code_to_name
+    mod_stock._em_get = _em_get
+    mod_df = types.ModuleType("tradingagents.dataflows")
+    mod_df.a_stock = mod_stock
+    mod_ta = types.ModuleType("tradingagents")
+    mod_ta.dataflows = mod_df
+    monkeypatch.setitem(sys.modules, "tradingagents", mod_ta)
+    monkeypatch.setitem(sys.modules, "tradingagents.dataflows", mod_df)
+    monkeypatch.setitem(sys.modules, "tradingagents.dataflows.a_stock", mod_stock)
+    return mod_stock
+
+
+def test_lookup_name_em_parses_f58(monkeypatch):
+    from engine.runner import _lookup_name_em
+
+    _fake_astock_modules(monkeypatch, em_payload={"f57": "603406", "f58": "天富龙"})
+    assert _lookup_name_em("603406") == "天富龙"
+
+
+def test_lookup_name_em_failure_returns_empty(monkeypatch):
+    from engine.runner import _lookup_name_em
+
+    _fake_astock_modules(monkeypatch, em_raises=True)
+    assert _lookup_name_em("603406") == ""
+    assert _lookup_name_em("not-a-code") == ""   # 非 6 位代码不发请求
+
+
+def test_resolve_stock_name_prefers_warm_map(monkeypatch):
+    """名称表已建好时直接查表，不发 HTTP。"""
+    _fake_astock_modules(monkeypatch, code_to_name={"600519": "贵州茅台"}, em_raises=True)
+    import engine.runner as runner
+    monkeypatch.setattr(runner.settings, "is_mock", False)
+    assert runner.resolve_stock_name("600519") == "贵州茅台"
+    # 表里没有的票走东财兜底（这里 em_raises=True → 空串，且不再触发 mootdx 建表）
+    assert runner.resolve_stock_name("603406") == ""
+
+
+def test_resolve_stock_name_em_fallback_when_map_missing(monkeypatch):
+    """名称表未建（mootdx 被拦）时东财兜底补上名称——603406 场景的根修。"""
+    _fake_astock_modules(monkeypatch, code_to_name=None,
+                         em_payload={"f57": "603406", "f58": "天富龙"})
+    import engine.runner as runner
+    monkeypatch.setattr(runner.settings, "is_mock", False)
+    assert runner.resolve_stock_name("603406") == "天富龙"

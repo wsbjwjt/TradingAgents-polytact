@@ -53,16 +53,48 @@ def _analysis_date_str(parameters: AnalysisParameters) -> str:
     return date.today().isoformat()
 
 
+def _lookup_name_em(symbol: str) -> str:
+    """东财 push2 单票名称查询（f58 字段）：HTTP 接口，盘后可用。
+
+    mootdx 全市场名称表从阿里云出发会被协议层拦截（端口通、握手被拒），
+    代码→名称这种单票查询不该为它付出全市场建表的代价。
+    """
+    if not re.fullmatch(r"\d{6}", symbol or ""):
+        return ""
+    try:
+        from tradingagents.dataflows import a_stock
+
+        market_code = 1 if symbol.startswith("6") else 0
+        r = a_stock._em_get(
+            "https://push2.eastmoney.com/api/qt/stock/get",
+            params={"fltt": "2", "invt": "2", "fields": "f57,f58",
+                    "secid": f"{market_code}.{symbol}"},
+            timeout=10,
+        )
+        d = r.json().get("data") or {}
+        return str(d.get("f58") or "").strip()
+    except Exception as exc:
+        logger.warning("东财名称查询失败 %s: %s", symbol, exc)
+        return ""
+
+
 def resolve_stock_name(symbol: str) -> str:
-    """解析股票代码对应的名称；mock 模式返回占位名。"""
+    """解析股票代码对应的名称；mock 模式返回占位名。
+
+    名称表只在已建好时才查（绝不为了单个名字触发 mootdx 全市场建表），
+    未建好/查不到时走东财单票兜底。
+    """
     if settings.is_mock:
         return f"{symbol}（模拟）"
     # 延迟导入 astock；用模块属性访问而非 from-import 绑定
     # （_build_name_code_map 会重新赋值 _code_to_name 全局，from-import 拿到的旧绑定永远是 None）
     from tradingagents.dataflows import a_stock
 
-    a_stock._build_name_code_map()
-    return (a_stock._code_to_name or {}).get(symbol, "")
+    if a_stock._code_to_name:
+        name = a_stock._code_to_name.get(symbol, "")
+        if name:
+            return name
+    return _lookup_name_em(symbol)
 
 
 def _warm_name_map_async() -> None:
@@ -87,9 +119,9 @@ def resolve_stock(query: str) -> tuple[str, str]:
     无法解析时抛 ValueError（消息已带面向用户的说明，可直接透传）。
     mock 模式只接受 6 位数字代码。
 
-    性能约束：6 位代码走 astock 纯本地规范化，**不触发名称表构建**（首次构建
-    要 mootdx 拉全市场列表，可能超过调用方超时）；表未建好时名称降级为空串，
-    并踢一个后台线程去建表，后续请求即可拿到名称。中文名必须查表，同步等。
+    性能约束：6 位代码走 astock 纯本地规范化，**不触发名称表构建**（mootdx
+    全市场建表慢且从阿里云会被协议层拦截）；名称先查已建好的表，查不到
+    走东财单票兜底（HTTP 亚秒级）。中文名必须查表，同步等。
     """
     q = (query or "").strip()
     if not q:
@@ -103,12 +135,13 @@ def resolve_stock(query: str) -> tuple[str, str]:
     from tradingagents.dataflows import a_stock
 
     code = a_stock.resolve_ticker(q)
+    name = ""
     if a_stock._code_to_name is not None:
         name = a_stock._code_to_name.get(code, "")
     else:
-        # 代码输入不阻塞等表；中文输入 resolve_ticker 内部已同步建过表，不会到这
-        name = ""
         _warm_name_map_async()
+    if not name:
+        name = _lookup_name_em(code)
     return code, name
 
 
