@@ -18,6 +18,8 @@ dependencies = [
     "croniter>=2.0",
     "markdown>=3.5",
     "lark-oapi>=1.4",
+    # Windows 无系统时区库，cron 的 ZoneInfo("Asia/Shanghai") 需要它
+    "tzdata>=2024.1; sys_platform == 'win32'",
 ]
 
 [project.scripts]

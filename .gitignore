@@ -21,3 +21,4 @@ dist/
 
 # 代理工作区
 .claude/worktrees/
+studio.yaml

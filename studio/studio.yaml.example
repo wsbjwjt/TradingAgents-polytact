@@ -12,7 +12,9 @@ llm:
   temperature: 0.3
 data:
   # engine 落盘根目录（其下有 analysis_results/<symbol>/<date>/reports/*.md）。
-  # docker-compose 部署时引擎数据卷只读挂载在 /data/ta
+  # 本机无 Docker 运行：与 engine 的 TA_DATA_DIR 指同一处（run_local.py 会用
+  #   STUDIO__DATA__TA_DIR 自动覆盖为仓库下 data/，此处留默认值即可）；
+  # docker-compose 部署：引擎数据卷只读挂载在 /data/ta（compose 已注入覆盖）。
   ta_dir: /data/ta
 notify:
   report_url_prefix: http://localhost:8890   # 生产改成 http://<服务器IP>:8890
@@ -49,14 +51,15 @@ replay:
 cron:
   timezone: Asia/Shanghai
   jobs:
-  - name: 早盘简报
-    schedule: 30 9 * * 1-5
-    symbol: 002594
-    depth: 标准
-    pipeline:
-    - digest
-    - notify
-  # - name: 07:30 兜底提醒
-  #   type: reminder
-  #   schedule: 30 7 * * 1-5
-  #   # 到点检查今天是否已有运行；没有则向飞书发提醒
+  - name: 07:30 兜底提醒
+    type: reminder
+    schedule: 30 7 * * 1-5
+    # 到点检查今天是否已有运行；没有则向飞书发提醒
+  # 固定标的自动分析示例（按需启用；晨报主流程是飞书发代码列表触发）：
+  # - name: 早盘简报
+  #   schedule: 30 9 * * 1-5
+  #   symbol: 002594
+  #   depth: 标准
+  #   pipeline:
+  #   - digest
+  #   - notify
