@@ -26,7 +26,7 @@ class TradingAgentsClient:
         self.timeout: float = float(cfg.get("api.timeout", 30))
         self._token: Optional[str] = None
         self._http = httpx.Client(base_url=self.base, timeout=self.timeout)
-        self._resolve_cache: dict[str, Optional[tuple[str, str]]] = {}
+        self._resolve_cache: dict[str, tuple[str, str, str]] = {}
 
     # ---- 认证 ----
     def login(self) -> str:
@@ -169,28 +169,32 @@ class TradingAgentsClient:
         self._name_cache[symbol] = name
         return name
 
-    def resolve_stock(self, query: str) -> Optional[tuple[str, str]]:
-        """代码/中文名 -> (6 位代码, 名称)。
+    def resolve_stock(self, query: str) -> tuple[str, str, str]:
+        """代码/中文名 -> (6 位代码, 名称, 错误原因)。
 
-        引擎明确无法识别时返回 None；网络/HTTP 错误向上抛出（调用方据此
-        区分" token 不是股票"与"引擎不可用"）。结果进程内缓存。
+        成功时返回 (code, name, "")；引擎明确无法识别时返回 ("", "", 原因)，
+        原因可直接展示给用户（如"通达信暂不可用，请改用 6 位代码"）。
+        网络/HTTP 错误向上抛出（调用方据此区分"未识别"与"引擎不可用"）。
+        结果进程内缓存。
         """
         if not query:
-            return None
+            return "", "", "输入为空"
         cache = self._resolve_cache
         if query in cache:
             return cache[query]
         try:
             body = self._request("GET", f"/api/stock-data/resolve/{quote(query, safe='')}")
-        except APIError:
-            cache[query] = None  # 引擎应答 success=False：不是可识别的股票
-            return None
+        except APIError as exc:
+            result = ("", "", str(exc))  # 引擎应答 success=False：原因透传
+            cache[query] = result
+            return result
         data = body.get("data") or {}
         symbol = str(data.get("symbol") or "")
         if not symbol:
-            cache[query] = None
-            return None
-        result = (symbol, str(data.get("name") or ""))
+            result = ("", "", "引擎返回空结果")
+            cache[query] = result
+            return result
+        result = (symbol, str(data.get("name") or ""), "")
         cache[query] = result
         return result
 

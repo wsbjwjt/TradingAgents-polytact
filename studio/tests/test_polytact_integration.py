@@ -164,7 +164,7 @@ def test_bot_learns_chat_id_and_dedupes(tmp_path, monkeypatch):
     sent = []
     fake_msg_api = NS(create=lambda req: sent.append(req) or NS(success=lambda: True))
     fake_client = NS(im=NS(v1=NS(message=fake_msg_api)))
-    fake_engine = NS(resolve_stock=lambda tok: None)  # 全部无法识别 → 只回帮助卡
+    fake_engine = NS(resolve_stock=lambda tok: ("", "", "找不到股票"))  # 全部无法识别 → 只回帮助卡
     handler = _make_message_handler(cfg, store, fake_client, engine_client=fake_engine)
 
     def ev(mid):
@@ -232,8 +232,11 @@ def test_bot_resolves_candidates_and_runs_pipeline(tmp_path, monkeypatch):
         lambda cfg_, store_, symbol, **kw: runs.append(symbol),
     )
 
-    table = {"600519": ("600519", "贵州茅台"), "贵州茅台": ("600519", "贵州茅台")}
-    fake_engine = NS(resolve_stock=lambda tok: table.get(tok))
+    table = {
+        "600519": ("600519", "贵州茅台", ""),
+        "贵州茅台": ("600519", "贵州茅台", ""),
+    }
+    fake_engine = NS(resolve_stock=lambda tok: table.get(tok, ("", "", "找不到股票")))
     store = Store(cfg.store_path())
     handler = listener_mod._make_message_handler(cfg, store, None, engine_client=fake_engine)
 
@@ -244,7 +247,7 @@ def test_bot_resolves_candidates_and_runs_pipeline(tmp_path, monkeypatch):
     title, md, template = cards[0]
     assert template == "green"
     assert "贵州茅台(600519)" in md
-    assert "未识别：你好" in md
+    assert "未识别：`你好`（找不到股票）" in md
     store.close()
 
 
@@ -261,7 +264,7 @@ def test_bot_all_unrecognized_replies_help(tmp_path, monkeypatch):
         listener_mod, "run_pipeline",
         lambda *a, **kw: runs.append(a),
     )
-    fake_engine = NS(resolve_stock=lambda tok: None)
+    fake_engine = NS(resolve_stock=lambda tok: ("", "", "找不到股票，请检查代码或名称"))
     store = Store(cfg.store_path())
     handler = listener_mod._make_message_handler(cfg, store, None, engine_client=fake_engine)
 
@@ -270,7 +273,7 @@ def test_bot_all_unrecognized_replies_help(tmp_path, monkeypatch):
     assert len(cards) == 1
     title, md, template = cards[0]
     assert template == "grey"
-    assert "未能识别：你好" in md
+    assert "未能识别：`你好`（找不到股票，请检查代码或名称）" in md
     store.close()
 
 
@@ -335,7 +338,7 @@ def test_bot_resolve_timeout_degrades_code_passthrough(tmp_path, monkeypatch):
     title, md, template = cards[0]
     assert template == "green"
     assert "名称校验" in md              # 降级提示可见
-    assert "未识别：贵州茅台" in md       # 中文名无法校验
+    assert "未识别：`贵州茅台`（名称校验暂不可用" in md  # 中文名无法校验，带原因
     store.close()
 
 

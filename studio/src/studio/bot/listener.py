@@ -120,14 +120,23 @@ def _help_md() -> str:
     )
 
 
-def _confirm_md(resolved: list[tuple[str, str]], failed: list[str]) -> str:
+def _format_failed(failed: list[tuple[str, str]]) -> str:
+    """未识别列表带原因，逐条一行，原因过长截断。"""
+    lines = []
+    for tok, reason in failed:
+        short = reason.split("。", 1)[0][:40]  # 引擎消息取第一句，防爆卡片
+        lines.append(f"`{tok}`（{short}）" if short else f"`{tok}`")
+    return "、".join(lines)
+
+
+def _confirm_md(resolved: list[tuple[str, str]], failed: list[tuple[str, str]]) -> str:
     items = "、".join(f"{name}({code})" if name else code for code, name in resolved)
     md = (
         f"已受理 **{len(resolved)} 只**：{items}\n\n"
         "开始分析，预计每只 5-15 分钟。完成后会把开盘前简报推送到配置的飞书群。"
     )
     if failed:
-        md += f"\n\n⚠️ 未识别：{', '.join(failed)}"
+        md += f"\n\n⚠️ 未识别：{_format_failed(failed)}"
     return md
 
 
@@ -211,34 +220,34 @@ def _make_message_handler(
             _send_card(lark_client, chat_id, "使用说明", _help_md(), template="grey")
             return
 
-        # 候选经引擎 resolve 校验：识别成功的进分析队列，失败的列进回复卡片。
+        # 候选经引擎 resolve 校验：识别成功的进分析队列，失败的带原因列进回复卡片。
         # 这样闲聊（"你好"）或非股票词不会触发昂贵的分析流程。
         resolved: list[tuple[str, str]] = []
         seen: set[str] = set()
-        failed: list[str] = []
+        failed: list[tuple[str, str]] = []  # (原始 token, 引擎给的原因)
         degraded = False
         try:
             engine = _get_engine()
             for tok in candidates:
                 try:
-                    hit = engine.resolve_stock(tok)
+                    code, name, reason = engine.resolve_stock(tok)
                 except Exception:
                     # resolve 失败（典型：名称表首次构建超 30s）。探活区分两种命运：
                     # 引擎活着 → 6 位代码格式本身可信，降级透传（名称为空）；
                     # 引擎死了 → 整体红卡，不再继续。
                     engine.health()
                     if re.fullmatch(r"\d{6}", tok):
-                        hit = (tok, "")
+                        code, name, reason = tok, "", ""
                         degraded = True
                     else:
-                        failed.append(tok)
+                        failed.append((tok, "名称校验暂不可用，请改用 6 位代码"))
                         continue
-                if hit and hit[0]:
-                    if hit[0] not in seen:  # 代码与中文名可能解析到同一只，按代码去重
-                        seen.add(hit[0])
-                        resolved.append(hit)
+                if code:
+                    if code not in seen:  # 代码与中文名可能解析到同一只，按代码去重
+                        seen.add(code)
+                        resolved.append((code, name))
                 else:
-                    failed.append(tok)
+                    failed.append((tok, reason or "未识别"))
         except Exception as exc:
             _send_card(
                 lark_client, chat_id, "引擎连接失败",
@@ -250,7 +259,7 @@ def _make_message_handler(
         if not resolved:
             md = _help_md()
             if failed:
-                md = f"未能识别：{', '.join(failed)}\n\n" + md
+                md = f"未能识别：{_format_failed(failed)}\n\n" + md
             _send_card(lark_client, chat_id, "未识别到股票", md, template="grey")
             return
 
