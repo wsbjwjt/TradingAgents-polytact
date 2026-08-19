@@ -373,13 +373,16 @@ class TradingAgentsGraph:
                       if k not in _PROVIDER_SPECIFIC_KWARGS}
             )
 
-            key = (provider.lower(), spec["model"], base_url)
+            key = (provider.lower(), spec["model"], base_url, spec.get("api_key"))
             if key not in cache:
+                client_kwargs = dict(role_kwargs)
+                if spec.get("api_key"):
+                    client_kwargs["api_key"] = spec["api_key"]
                 cache[key] = create_llm_client(
                     provider=provider,
                     model=spec["model"],
                     base_url=base_url,
-                    **role_kwargs,
+                    **client_kwargs,
                 ).get_llm()
             resolved[role] = cache[key]
 

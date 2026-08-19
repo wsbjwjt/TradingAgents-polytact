@@ -65,3 +65,24 @@ class TestOpenAICompatibleClient:
         )
         client.get_llm()
         assert not [w for w in recwarn if "not in the known model list" in str(w.message)]
+
+    def test_per_role_api_key_wins_over_env(self, monkeypatch):
+        monkeypatch.setenv("OPENAI_COMPATIBLE_API_KEY", "env-key")
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        # api_key passed via kwargs (role_llms spec) must take precedence.
+        client = OpenAIClient(
+            "my-model", base_url="https://relay.example/v1",
+            provider="openai_compatible", api_key="role-key",
+        )
+        llm = client.get_llm()
+        assert llm.client._client.api_key == "role-key"
+
+    def test_role_api_key_absent_falls_back_to_env(self, monkeypatch):
+        monkeypatch.setenv("OPENAI_COMPATIBLE_API_KEY", "env-key")
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        client = OpenAIClient(
+            "my-model", base_url="https://relay.example/v1",
+            provider="openai_compatible",
+        )
+        llm = client.get_llm()
+        assert llm.client._client.api_key == "env-key"
