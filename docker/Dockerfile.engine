@@ -1,0 +1,23 @@
+# syntax=docker/dockerfile:1
+FROM python:3.12-slim
+
+# 安装基础工具
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# 先安装 vendored astock（引擎本体）
+COPY vendor/astock ./vendor/astock
+RUN pip install --no-cache-dir ./vendor/astock
+
+# 再安装 engine 服务
+COPY engine ./engine
+RUN pip install --no-cache-dir ./engine
+
+# 暴露服务端口
+EXPOSE 8000
+
+# 默认启动命令
+CMD ["uvicorn", "engine.main:app", "--host", "0.0.0.0", "--port", "8000"]
