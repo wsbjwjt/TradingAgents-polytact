@@ -53,36 +53,59 @@ def _analysis_date_str(parameters: AnalysisParameters) -> str:
     return date.today().isoformat()
 
 
-def _lookup_name_em(symbol: str) -> str:
-    """东财 push2 单票名称查询（f58 字段）：HTTP 接口，盘后可用。
-
-    mootdx 全市场名称表从阿里云出发会被协议层拦截（端口通、握手被拒），
-    代码→名称这种单票查询不该为它付出全市场建表的代价。
-    """
-    if not re.fullmatch(r"\d{6}", symbol or ""):
-        return ""
+def _name_from_tencent(symbol: str) -> str:
+    """腾讯行情 qt.gtimg.cn：实测服务器 0.18s 返回，GBK 编码，v_代码="市场~名称~代码~..." """
     try:
-        from tradingagents.dataflows import a_stock
+        import requests
+
+        prefix = "sh" if symbol.startswith("6") else "sz"
+        r = requests.get(f"https://qt.gtimg.cn/q={prefix}{symbol}", timeout=8)
+        r.encoding = "gbk"
+        parts = r.text.split("~")
+        if len(parts) > 2 and parts[2] == symbol:
+            return parts[1].strip()
+    except Exception as exc:
+        logger.warning("腾讯名称查询失败 %s: %s", symbol, exc)
+    return ""
+
+
+def _name_from_eastmoney(symbol: str) -> str:
+    """东财 push2 备用：f58 字段即名称（引擎侧低频调用，不进 vendor 的 _em_get 节流链）。"""
+    try:
+        import requests
 
         market_code = 1 if symbol.startswith("6") else 0
-        r = a_stock._em_get(
+        r = requests.get(
             "https://push2.eastmoney.com/api/qt/stock/get",
             params={"fltt": "2", "invt": "2", "fields": "f57,f58",
                     "secid": f"{market_code}.{symbol}"},
-            timeout=10,
+            timeout=8,
         )
         d = r.json().get("data") or {}
-        return str(d.get("f58") or "").strip()
+        if str(d.get("f57") or "") == symbol:
+            return str(d.get("f58") or "").strip()
     except Exception as exc:
         logger.warning("东财名称查询失败 %s: %s", symbol, exc)
+    return ""
+
+
+def _lookup_name_http(symbol: str) -> str:
+    """HTTP 单票名称兜底：腾讯主用 → 东财备用。
+
+    mootdx 全市场名称表从云服务器实测不可用（探测 54s 后内部 TypeError），
+    代码→名称这种单票查询不该付出全市场建表的代价。新浪 hq.sinajs.cn
+    实测被反爬（403 Forbidden），不用。
+    """
+    if not re.fullmatch(r"\d{6}", symbol or ""):
         return ""
+    return _name_from_tencent(symbol) or _name_from_eastmoney(symbol)
 
 
 def resolve_stock_name(symbol: str) -> str:
     """解析股票代码对应的名称；mock 模式返回占位名。
 
     名称表只在已建好时才查（绝不为了单个名字触发 mootdx 全市场建表），
-    未建好/查不到时走东财单票兜底。
+    未建好/查不到时走 HTTP 单票兜底（腾讯主用，东财备用）。
     """
     if settings.is_mock:
         return f"{symbol}（模拟）"
@@ -94,7 +117,7 @@ def resolve_stock_name(symbol: str) -> str:
         name = a_stock._code_to_name.get(symbol, "")
         if name:
             return name
-    return _lookup_name_em(symbol)
+    return _lookup_name_http(symbol)
 
 
 def _warm_name_map_async() -> None:
@@ -120,8 +143,8 @@ def resolve_stock(query: str) -> tuple[str, str]:
     mock 模式只接受 6 位数字代码。
 
     性能约束：6 位代码走 astock 纯本地规范化，**不触发名称表构建**（mootdx
-    全市场建表慢且从阿里云会被协议层拦截）；名称先查已建好的表，查不到
-    走东财单票兜底（HTTP 亚秒级）。中文名必须查表，同步等。
+    全市场建表从云服务器实测不可用）；名称先查已建好的表，查不到走 HTTP
+    单票兜底（腾讯主用，东财备用，亚秒级）。中文名必须查表，同步等。
     """
     q = (query or "").strip()
     if not q:
@@ -141,7 +164,7 @@ def resolve_stock(query: str) -> tuple[str, str]:
     else:
         _warm_name_map_async()
     if not name:
-        name = _lookup_name_em(code)
+        name = _lookup_name_http(code)
     return code, name
 
 

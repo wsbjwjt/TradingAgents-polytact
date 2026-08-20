@@ -302,25 +302,39 @@ def test_decision_parse_confidence_only_near_keyword():
     assert d["target_price"] == 1500.0
 
 
-# ---------- 名称解析：东财兜底 ----------
+# ---------- 名称解析：HTTP 兜底（腾讯主用 / 东财备用） ----------
 
-def _fake_astock_modules(monkeypatch, code_to_name=None, em_payload=None, em_raises=False):
-    """engine 测试环境没有真 astock：注入假 tradingagents.dataflows.a_stock。"""
+class _FakeResp:
+    def __init__(self, text="", payload=None):
+        self.text = text
+        self._payload = payload
+        self.encoding = None
+
+    def json(self):
+        return {"data": self._payload or {}}
+
+
+def _patch_requests(monkeypatch, tencent_text=None, em_payload=None, raises=False):
+    """替换 requests.get：按 URL 分流到腾讯/东财的假响应。"""
+    import requests as _rq
+
+    def fake_get(url, **kw):
+        if raises:
+            raise ConnectionError("boom")
+        if "gtimg.cn" in url:
+            return _FakeResp(text=tencent_text or 'v_xx=""')
+        return _FakeResp(payload=em_payload)
+
+    monkeypatch.setattr(_rq, "get", fake_get)
+
+
+def _fake_astock_map(monkeypatch, code_to_name):
+    """engine 测试环境没有真 astock：注入只带 _code_to_name 的假模块。"""
     import sys
     import types
 
-    class _Resp:
-        def json(self):
-            return {"data": em_payload or {}}
-
-    def _em_get(*a, **kw):
-        if em_raises:
-            raise ConnectionError("boom")
-        return _Resp()
-
     mod_stock = types.ModuleType("tradingagents.dataflows.a_stock")
     mod_stock._code_to_name = code_to_name
-    mod_stock._em_get = _em_get
     mod_df = types.ModuleType("tradingagents.dataflows")
     mod_df.a_stock = mod_stock
     mod_ta = types.ModuleType("tradingagents")
@@ -328,38 +342,48 @@ def _fake_astock_modules(monkeypatch, code_to_name=None, em_payload=None, em_rai
     monkeypatch.setitem(sys.modules, "tradingagents", mod_ta)
     monkeypatch.setitem(sys.modules, "tradingagents.dataflows", mod_df)
     monkeypatch.setitem(sys.modules, "tradingagents.dataflows.a_stock", mod_stock)
-    return mod_stock
 
 
-def test_lookup_name_em_parses_f58(monkeypatch):
-    from engine.runner import _lookup_name_em
+def test_lookup_name_http_tencent_primary(monkeypatch):
+    """腾讯格式 v_sh603406="1~天富龙~603406~..." 解析出名称。"""
+    from engine.runner import _lookup_name_http
 
-    _fake_astock_modules(monkeypatch, em_payload={"f57": "603406", "f58": "天富龙"})
-    assert _lookup_name_em("603406") == "天富龙"
+    _patch_requests(monkeypatch, tencent_text='v_sh603406="1~天富龙~603406~30.72~29.56"')
+    assert _lookup_name_http("603406") == "天富龙"
 
 
-def test_lookup_name_em_failure_returns_empty(monkeypatch):
-    from engine.runner import _lookup_name_em
+def test_lookup_name_http_falls_back_to_eastmoney(monkeypatch):
+    """腾讯查不到（代码校验不过）→ 东财 f58 备用。"""
+    from engine.runner import _lookup_name_http
 
-    _fake_astock_modules(monkeypatch, em_raises=True)
-    assert _lookup_name_em("603406") == ""
-    assert _lookup_name_em("not-a-code") == ""   # 非 6 位代码不发请求
+    _patch_requests(monkeypatch, tencent_text='v_sh603406="1~~~"',
+                    em_payload={"f57": "603406", "f58": "天富龙"})
+    assert _lookup_name_http("603406") == "天富龙"
+
+
+def test_lookup_name_http_failure_returns_empty(monkeypatch):
+    from engine.runner import _lookup_name_http
+
+    _patch_requests(monkeypatch, raises=True)
+    assert _lookup_name_http("603406") == ""
+    assert _lookup_name_http("not-a-code") == ""   # 非 6 位代码不发请求
 
 
 def test_resolve_stock_name_prefers_warm_map(monkeypatch):
     """名称表已建好时直接查表，不发 HTTP。"""
-    _fake_astock_modules(monkeypatch, code_to_name={"600519": "贵州茅台"}, em_raises=True)
+    _fake_astock_map(monkeypatch, {"600519": "贵州茅台"})
+    _patch_requests(monkeypatch, raises=True)            # HTTP 全挂也不影响查表
     import engine.runner as runner
     monkeypatch.setattr(runner.settings, "is_mock", False)
     assert runner.resolve_stock_name("600519") == "贵州茅台"
-    # 表里没有的票走东财兜底（这里 em_raises=True → 空串，且不再触发 mootdx 建表）
+    # 表里没有的票走 HTTP 兜底（这里全挂 → 空串，且不再触发 mootdx 建表）
     assert runner.resolve_stock_name("603406") == ""
 
 
-def test_resolve_stock_name_em_fallback_when_map_missing(monkeypatch):
-    """名称表未建（mootdx 被拦）时东财兜底补上名称——603406 场景的根修。"""
-    _fake_astock_modules(monkeypatch, code_to_name=None,
-                         em_payload={"f57": "603406", "f58": "天富龙"})
+def test_resolve_stock_name_http_fallback_when_map_missing(monkeypatch):
+    """名称表未建（mootdx 服务器不可用）时 HTTP 兜底补上名称——603406 场景的根修。"""
+    _fake_astock_map(monkeypatch, None)
+    _patch_requests(monkeypatch, tencent_text='v_sh603406="1~天富龙~603406~30.72"')
     import engine.runner as runner
     monkeypatch.setattr(runner.settings, "is_mock", False)
     assert runner.resolve_stock_name("603406") == "天富龙"
