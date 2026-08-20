@@ -514,12 +514,17 @@ def test_normalize_h1_code_name_order_title():
 
 
 def test_normalize_h1_already_good_or_absent_untouched():
-    """已规范的 H1、无 H1 正文、无名可查时都不动。"""
+    """已规范的 H1 重建后与原文一致（幂等）；无 H1 正文、无名可查时都不动。"""
     from studio.notify.report_server import split_sections
 
-    [(_, body)] = split_sections("## bull_researcher\n# 🐂 任子行（300311）牛市投资论点\n\n正文",
+    [(_, body)] = split_sections("## bull_researcher\n# 任子行（300311）牛市投资论点\n\n正文",
                                  symbol="300311", name="任子行")
-    assert body.startswith("# 🐂 任子行（300311）牛市投资论点")
+    assert body.startswith("# 任子行（300311）牛市投资论点")
+
+    # emoji 前缀归一到「名字（代码）」之后，前缀统一优先于保留原始语序
+    [(_, body_emoji)] = split_sections("## bull_researcher\n# 🐂 任子行（300311）牛市投资论点\n\n正文",
+                                       symbol="300311", name="任子行")
+    assert body_emoji.startswith("# 任子行（300311）🐂 牛市投资论点")
 
     [(_, body2)] = split_sections("## fundamentals_report\n根据获取到的数据，直接开头",
                                   symbol="300311", name="任子行")
@@ -528,6 +533,29 @@ def test_normalize_h1_already_good_or_absent_untouched():
     [(_, body3)] = split_sections("## market_report\n# 300311 技术面分析报告",
                                   symbol="300311", name="")
     assert body3.startswith("# 300311 技术面分析报告")
+
+
+def test_normalize_h1_spaced_name_no_duplication():
+    """002165 红宝丽案例：名称带对齐空格 + 模型写紧凑名 → 不得重复、不留空括号。"""
+    from studio.notify.report_server import split_sections
+
+    [(_, body)] = split_sections("## fundamentals_report\n# 红宝丽（002165）基本面分析报告\n\n正文",
+                                 symbol="002165", name="红 宝 丽")
+    assert body.startswith("# 红宝丽（002165）基本面分析报告")
+    assert body.count("红宝丽") == 1 and "（）" not in body.splitlines()[0]
+
+
+def test_normalize_h1_code_first_parens_and_suffix():
+    """"代码（名字）"乱序、"名字（代码.SZ)" 后缀都归一，不留空括号与 .SZ 残渣。"""
+    from studio.notify.report_server import split_sections
+
+    [(_, b1)] = split_sections("## sentiment_report\n# 600758（辽宁能源）市场情绪分析报告\n\n正文",
+                               symbol="600758", name="辽宁能源")
+    assert b1.startswith("# 辽宁能源（600758）市场情绪分析报告")
+
+    [(_, b2)] = split_sections("## policy_report\n# 平安银行（000001.SZ）政策分析报告\n\n正文",
+                               symbol="000001", name="平安银行")
+    assert b2.startswith("# 平安银行（000001）政策分析报告")
 
 
 def test_display_uses_fullwidth_parens():
@@ -608,3 +636,59 @@ def test_bot_pipeline_failure_marks_card_red(tmp_path, monkeypatch):
     title, md, template = patches[0]
     assert title.startswith("❌") and template == "red" and "引擎超时" in md
     store.close()
+
+
+# ---------- 简报标题五级裁决（替代旧三态 看多/看空/中性） ----------
+
+def test_digest_title_uses_engine_five_level_verdict():
+    """引擎裁决优先：裁决"减持"时标题（减持），不受简报首行"看空"影响。"""
+    from studio.notify.render import render_digest_message
+
+    title, _, _, _ = render_digest_message(
+        "603406", "【结论】看空：业绩承压", name="天富龙", verdict="减持")
+    assert title == "📊 天富龙（603406） 开盘前简报（减持）"
+
+
+def test_digest_title_fallback_scans_five_levels():
+    """未传裁决时回落扫描首行，五级词优先于旧三态。"""
+    from studio.notify.render import render_digest_message
+
+    title, _, _, _ = render_digest_message("600519", "【结论】增持：估值修复")
+    assert "（增持）" in title
+    # 旧三态简报兼容
+    title2, _, _, _ = render_digest_message("600519", "【结论】中性：观望")
+    assert "（中性）" in title2
+
+
+def test_fetch_report_carries_recommendation(tmp_path):
+    """文件卷路径也带上引擎裁决：recommendation 优先，decision.action 兜底。"""
+    from studio.digest.fetcher import fetch_report
+
+    reports = tmp_path / "analysis_results" / "603406" / "2026-08-20" / "reports"
+    reports.mkdir(parents=True)
+    (reports / "final_trade_decision.md").write_text("Rating: Underweight", encoding="utf-8")
+
+    class FakeClient:
+        def get_result(self, task_id):
+            return {"stock_code": "603406", "recommendation": "减持"}
+        def get_status(self, task_id):
+            return {}
+
+    doc = fetch_report(FakeClient(), "tid-r", ta_dir=tmp_path)
+    assert doc.recommendation == "减持"
+
+    class FakeClient2(FakeClient):
+        def get_result(self, task_id):
+            return {"stock_code": "603406", "decision": {"action": "卖出"}}
+
+    assert fetch_report(FakeClient2(), "tid-r", ta_dir=tmp_path).recommendation == "卖出"
+
+
+def test_build_user_anchors_rating():
+    """裁决评级进入提炼提示词，锚定【结论】行。"""
+    from studio.digest.templates import build_user
+
+    out = build_user("603406", "标准", "报告正文", rating="减持")
+    assert "组合经理裁决评级：减持" in out
+    assert "【结论】行以此评级开头" in out
+    assert build_user("603406", "标准", "报告正文").count("裁决评级") == 0

@@ -20,8 +20,9 @@ def _clip(text: str) -> str:
     return text[:head] + "\n\n……（中间部分省略）……\n\n" + text[-tail:]
 
 
-def condense(cfg, report_text: str, symbol: str = "", depth: str = "") -> tuple[str, dict]:
-    """返回 (简报文本, usage 信息)。"""
+def condense(cfg, report_text: str, symbol: str = "", depth: str = "",
+             rating: str = "") -> tuple[str, dict]:
+    """返回 (简报文本, usage 信息)。rating 为引擎五级裁决，锚定【结论】行。"""
     base_url = str(cfg.get("llm.base_url", "")).rstrip("/")
     api_key = cfg.get("llm.api_key", "")
     model = cfg.get("llm.model", "")
@@ -32,7 +33,7 @@ def condense(cfg, report_text: str, symbol: str = "", depth: str = "") -> tuple[
         "model": model,
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": build_user(symbol, depth, _clip(report_text))},
+            {"role": "user", "content": build_user(symbol, depth, _clip(report_text), rating=rating)},
         ],
         "max_tokens": int(cfg.get("llm.max_tokens", 2000)),
         "temperature": float(cfg.get("llm.temperature", 0.3)),

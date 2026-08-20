@@ -101,6 +101,11 @@ def _lookup_name_http(symbol: str) -> str:
     return _name_from_tencent(symbol) or _name_from_eastmoney(symbol)
 
 
+def _clean_name(name: str) -> str:
+    """mootdx 名称表带对齐空格（"红 宝 丽"），下游所有展示都要紧凑写法。"""
+    return re.sub(r"\s+", "", name or "")
+
+
 def resolve_stock_name(symbol: str) -> str:
     """解析股票代码对应的名称；mock 模式返回占位名。
 
@@ -116,8 +121,8 @@ def resolve_stock_name(symbol: str) -> str:
     if a_stock._code_to_name:
         name = a_stock._code_to_name.get(symbol, "")
         if name:
-            return name
-    return _lookup_name_http(symbol)
+            return _clean_name(name)
+    return _clean_name(_lookup_name_http(symbol))
 
 
 def _warm_name_map_async() -> None:
@@ -165,7 +170,7 @@ def resolve_stock(query: str) -> tuple[str, str]:
         _warm_name_map_async()
     if not name:
         name = _lookup_name_http(code)
-    return code, name
+    return code, _clean_name(name)
 
 
 # 上游评级词汇表（vendor/astock portfolio_manager.py 提示词规定的 Rating Scale）

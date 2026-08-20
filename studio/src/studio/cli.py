@@ -209,11 +209,11 @@ def notify_send(
     finally:
         client.close()
     try:
-        brief, _ = condense(cfg, doc.text, symbol=doc.symbol)
+        brief, _ = condense(cfg, doc.text, symbol=doc.symbol, rating=doc.recommendation)
         report_url, debate_url, replay_url = _report_urls(cfg, task_id)
         title, body, md, buttons = render_digest_message(
             doc.symbol, brief, report_url, name=name,
-            replay_url=replay_url, debate_url=debate_url)
+            replay_url=replay_url, debate_url=debate_url, verdict=doc.recommendation)
     except Exception:
         title, body, md, buttons = f"📄 {doc.symbol} 分析报告", doc.text[:1500], doc.text[:3000], []
     for line in push_all(channels, title, body, md, buttons=buttons):

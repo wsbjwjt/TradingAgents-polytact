@@ -23,6 +23,7 @@ class ReportDoc:
     symbol: str = ""
     date: str = ""
     task_id: str = ""
+    recommendation: str = ""   # 引擎五级裁决：买入/增持/持有/减持/卖出
 
     @property
     def chars(self) -> int:
@@ -49,14 +50,24 @@ def fetch_report(client, task_id: str, ta_dir: Optional[Path] = None) -> ReportD
         if doc:
             doc.task_id = task_id
             doc.symbol = doc.symbol or symbol
+            doc.recommendation = _recommendation_of(data)
             return doc
 
     text = _result_to_text(data)
     if text:
-        return ReportDoc(text=text, source="api", symbol=symbol, task_id=task_id)
+        return ReportDoc(text=text, source="api", symbol=symbol, task_id=task_id,
+                         recommendation=_recommendation_of(data))
     raise FileNotFoundError(
         f"任务 {task_id} 的报告在 {ta_dir or '（未配置 data.ta_dir）'} 与 API 均未找到"
     )
+
+
+def _recommendation_of(data: dict) -> str:
+    """从 API result 取五级裁决（recommendation 优先，decision.action 兜底）。"""
+    rec = str(data.get("recommendation") or "").strip()
+    if not rec:
+        rec = str((data.get("decision") or {}).get("action") or "").strip()
+    return rec
 
 
 def _result_to_text(data: dict) -> str:

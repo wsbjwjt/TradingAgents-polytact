@@ -10,16 +10,20 @@ def _display(symbol: str, name: str) -> str:
 
 def render_digest_message(symbol: str, digest_text: str, source_url: str = "",
                           name: str = "", replay_url: str = "",
-                          debate_url: str = "") -> tuple[str, str, str, list]:
-    """返回 (title, body, markdown, buttons)。"""
+                          debate_url: str = "", verdict: str = "") -> tuple[str, str, str, list]:
+    """返回 (title, body, markdown, buttons)。
+
+    verdict：引擎五级裁决（买入/增持/持有/减持/卖出），由调用方从任务结果传入；
+    缺省时回落扫描简报首行（兼容旧三态简报）。
+    """
     who = _display(symbol, name)
     title = f"📊 {who} 开盘前简报"
-    first_line = digest_text.splitlines()[0] if digest_text else ""
-    verdict = ""
-    for v in ("看多", "看空", "中性"):
-        if v in first_line:
-            verdict = v
-            break
+    if not verdict:
+        first_line = digest_text.splitlines()[0] if digest_text else ""
+        for v in ("买入", "增持", "持有", "减持", "卖出", "看多", "看空", "中性"):
+            if v in first_line:
+                verdict = v
+                break
     if verdict:
         title += f"（{verdict}）"
     md = digest_text

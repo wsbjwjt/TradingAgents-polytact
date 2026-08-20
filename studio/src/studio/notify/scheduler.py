@@ -116,7 +116,8 @@ def run_pipeline(
         if status.get("status") == "completed":
             if "digest" in pipeline:
                 doc = fetch_report(client, task_id, _ta_dir(cfg))
-                text, usage = condense(cfg, doc.text, symbol=symbol, depth=depth)
+                text, usage = condense(cfg, doc.text, symbol=symbol, depth=depth,
+                                       rating=doc.recommendation)
                 store.save_digest(task_id, symbol, cfg.get("llm.model"), doc.chars, text)
                 summary["digest"] = text
                 summary["input_chars"] = doc.chars
@@ -126,7 +127,8 @@ def run_pipeline(
                     report_url, debate_url, replay_url = _report_urls(cfg, task_id)
                     title, body, md, buttons = render_digest_message(
                         symbol, text, report_url, name=name,
-                        replay_url=replay_url, debate_url=debate_url)
+                        replay_url=replay_url, debate_url=debate_url,
+                        verdict=doc.recommendation)
                     summary["notify"] = push_all(channels, title, body, md, buttons=buttons)
             elif channels:
                 title, body, md = render_task_event(symbol, "completed", name=name)

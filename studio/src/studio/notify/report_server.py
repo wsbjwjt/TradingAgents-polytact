@@ -200,18 +200,21 @@ _H1_RE = re.compile(r"(?m)^#\s+(.+?)\s*$")
 def _normalize_h1(body: str, symbol: str, name: str) -> str:
     """把分析师自报的 H1 统一为「中文名（代码）×××报告」。
 
-    模型写标题格式漂移（只有代码 / "代码 名字" 乱序），渲染层归一；
-    已是规范格式、无 H1 或剥完不剩报告类型词的，原样保留。
+    模型写标题格式漂移（只有代码 / "代码 名字" 乱序 / 带 .SH 后缀 / 名字带对齐
+    空格如"红 宝 丽"），渲染层一律剥离代码与名字的全部出现后重建前缀——幂等，
+    且杜绝"前缀已含名字、尾巴又剩一遍"的重复。剥完不剩报告类型词的原样保留。
     """
     if not symbol or not name:
         return body
+    name = re.sub(r"\s+", "", str(name))
     m = _H1_RE.search(body)
     if not m:
         return body
     headline = m.group(1)
-    if f"{name}（{symbol}）" in headline or f"{name}({symbol})" in headline:
-        return body
-    tail = headline.replace(symbol, "").replace(name, "").strip(" -—_·:：")
+    tail = headline
+    for pat in (f"{symbol}.SH", f"{symbol}.SZ", symbol, name, " ".join(name)):
+        tail = tail.replace(pat, "")
+    tail = tail.replace("（）", "").replace("()", "").strip(" -—_·:：（）()")
     if len(tail) < 4:
         return body
     return body[:m.start()] + f"# {name}（{symbol}）{tail}" + body[m.end():]
