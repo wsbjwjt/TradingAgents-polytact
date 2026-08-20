@@ -311,30 +311,56 @@ class _FakeResp:
         self.encoding = None
 
     def json(self):
-        return {"data": self._payload or {}}
+        return self._payload if self._payload is not None else {}
 
 
-def _patch_requests(monkeypatch, tencent_text=None, em_payload=None, raises=False):
-    """替换 requests.get：按 URL 分流到腾讯/东财的假响应。"""
+def _patch_requests(monkeypatch, tencent_text=None, em_payload=None, raises=False,
+                    suggest_text=None, em_suggest=None):
+    """替换 requests.get：按 URL 分流到腾讯/东财的假响应（行情/搜索两族）。"""
     import requests as _rq
 
     def fake_get(url, **kw):
         if raises:
             raise ConnectionError("boom")
-        if "gtimg.cn" in url:
+        if "smartbox" in url:            # 名称→代码 腾讯搜索
+            return _FakeResp(text=suggest_text if suggest_text is not None else 'v_hint=""')
+        if "searchadapter" in url:       # 名称→代码 东财搜索（东财真实形状）
+            return _FakeResp(payload={"QuotationCodeTable": {"Data": [em_suggest] if em_suggest else []}})
+        if "gtimg.cn" in url:            # 代码→名称 腾讯行情
             return _FakeResp(text=tencent_text or 'v_xx=""')
-        return _FakeResp(payload=em_payload)
+        return _FakeResp(payload={"data": em_payload or {}})   # 东财 push2 真实形状
 
     monkeypatch.setattr(_rq, "get", fake_get)
 
 
 def _fake_astock_map(monkeypatch, code_to_name):
-    """engine 测试环境没有真 astock：注入只带 _code_to_name 的假模块。"""
+    """engine 测试环境没有真 astock：注入带 _code_to_name/resolve_ticker 的假模块。
+
+    resolve_ticker 复刻 vendor 语义：非中文走规范化；中文精确查 n2c，
+    唯一子串匹配返回，多只抛"多只股票"，没中抛"找不到"。
+    """
+    import re as _re
     import sys
     import types
 
+    def _fake_resolve_ticker(s):
+        s = s.strip()
+        if not any("一" <= ch <= "鿿" for ch in s):
+            return _re.sub(r"(sh|sz)", "", s, flags=_re.IGNORECASE).split(".")[0]
+        clean = s.replace(" ", "")
+        n2c = {n: c for c, n in (code_to_name or {}).items()}
+        if clean in n2c:
+            return n2c[clean]
+        matches = {n: c for n, c in n2c.items() if clean in n}
+        if len(matches) == 1:
+            return next(iter(matches.values()))
+        if len(matches) > 1:
+            raise ValueError(f"'{s}' 匹配到多只股票: {matches}，请输入完整名称或代码")
+        raise ValueError(f"找不到股票 '{s}'")
+
     mod_stock = types.ModuleType("tradingagents.dataflows.a_stock")
     mod_stock._code_to_name = code_to_name
+    mod_stock.resolve_ticker = _fake_resolve_ticker
     mod_df = types.ModuleType("tradingagents.dataflows")
     mod_df.a_stock = mod_stock
     mod_ta = types.ModuleType("tradingagents")
@@ -387,3 +413,66 @@ def test_resolve_stock_name_http_fallback_when_map_missing(monkeypatch):
     import engine.runner as runner
     monkeypatch.setattr(runner.settings, "is_mock", False)
     assert runner.resolve_stock_name("603406") == "天富龙"
+
+
+# ---------- 中文名 → 代码：HTTP 搜索兜底（腾讯 suggest 主用 / 东财备用） ----------
+
+def test_search_code_http_tencent_primary(monkeypatch):
+    """smartbox 格式 v_hint="sz~000703~恒逸石化~hysh~GP-A" 精确命中。"""
+    from engine.runner import _search_code_http
+
+    _patch_requests(monkeypatch,
+                    suggest_text='v_hint="sz~000703~恒逸石化~hysh~GP-A"')
+    assert _search_code_http("恒逸石化") == ("000703", "恒逸石化")
+
+
+def test_search_code_http_falls_back_to_eastmoney(monkeypatch):
+    """腾讯没命中 → 东财 Classify=AStock 且名称精确相等的建议。"""
+    from engine.runner import _search_code_http
+
+    _patch_requests(monkeypatch, suggest_text='v_hint=""',
+                    em_suggest={"Code": "000703", "Name": "恒逸石化", "Classify": "AStock"})
+    assert _search_code_http("恒逸石化") == ("000703", "恒逸石化")
+
+
+def test_search_code_http_rejects_fuzzy_and_non_astock(monkeypatch):
+    """模糊/板块名、指数、基金类建议一律不命中——必须名称精确相等 + A股。"""
+    from engine.runner import _search_code_http
+
+    _patch_requests(monkeypatch,
+                    suggest_text='v_hint="sz~000793~神州石化~szsf~GP-A"',  # 名称不等
+                    em_suggest={"Code": "000300", "Name": "沪深300", "Classify": "Index"})
+    assert _search_code_http("恒逸石化") == ("", "")
+    assert _search_code_http("游戏") == ("", "")          # 行业/概念名不是股票
+
+
+def test_resolve_stock_chinese_http_fallback(monkeypatch):
+    """名称表未建（服务器常态）时，中文输入走 HTTP 搜索——恒逸石化场景的根修。"""
+    _fake_astock_map(monkeypatch, None)   # mootdx 表未建
+    _patch_requests(monkeypatch,
+                    suggest_text='v_hint="sz~000703~恒逸石化~hysh~GP-A"')
+    import engine.runner as runner
+    monkeypatch.setattr(runner.settings, "is_mock", False)
+    assert runner.resolve_stock("恒逸石化") == ("000703", "恒逸石化")
+
+
+def test_resolve_stock_chinese_prefers_warm_map(monkeypatch):
+    """表已建好时中文名本地匹配（含唯一模糊），不发 HTTP。"""
+    _fake_astock_map(monkeypatch, {"000703": "恒逸石化", "600871": "石化油服"})
+    _patch_requests(monkeypatch, raises=True)             # HTTP 全挂也不影响本地匹配
+    import engine.runner as runner
+    monkeypatch.setattr(runner.settings, "is_mock", False)
+    assert runner.resolve_stock("恒逸石化") == ("000703", "恒逸石化")
+    assert runner.resolve_stock("石化油服") == ("600871", "石化油服")
+
+
+def test_resolve_stock_chinese_ambiguous_transparent(monkeypatch):
+    """唯一子串匹配歧义时透传"匹配到多只"，不用含糊的"找不到"盖掉。"""
+    import pytest as _pytest
+
+    _fake_astock_map(monkeypatch, {"600871": "石化油服", "600688": "上海石化"})
+    _patch_requests(monkeypatch, raises=True)
+    import engine.runner as runner
+    monkeypatch.setattr(runner.settings, "is_mock", False)
+    with _pytest.raises(ValueError, match="多只"):
+        runner.resolve_stock("石化")

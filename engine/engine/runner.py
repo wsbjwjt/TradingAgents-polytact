@@ -101,6 +101,63 @@ def _lookup_name_http(symbol: str) -> str:
     return _name_from_tencent(symbol) or _name_from_eastmoney(symbol)
 
 
+def _search_tencent_name(query: str) -> tuple[str, str]:
+    """腾讯智能搜索：v_hint="sz~000703~恒逸石化~hysh~GP-A" → (代码, 名称)。"""
+    try:
+        import requests
+        from urllib.parse import quote
+
+        r = requests.get(
+            f"https://smartbox.gtimg.cn/s3/?v=2&q={quote(query)}&t=all", timeout=8
+        )
+        r.encoding = "gbk"
+        inner = r.text.split('"')[1] if '"' in r.text else ""
+        parts = inner.split("~")
+        if (len(parts) >= 3 and parts[2].replace(" ", "") == query
+                and re.fullmatch(r"\d{6}", parts[1] or "")):
+            return parts[1], parts[2]
+    except Exception as exc:
+        logger.warning("腾讯名称搜索失败 %s: %s", query, exc)
+    return "", ""
+
+
+def _search_eastmoney_name(query: str) -> tuple[str, str]:
+    """东财搜索建议备用：Classify=AStock 且名称精确相等才算命中。"""
+    try:
+        import requests
+
+        r = requests.get(
+            "https://searchadapter.eastmoney.com/api/suggest/get",
+            params={"input": query, "type": "14", "count": "8",
+                    "token": "D43BF722C8E33BDC906FB84D85E326E8"},
+            timeout=8,
+        )
+        for item in (r.json().get("QuotationCodeTable", {}).get("Data") or []):
+            code = str(item.get("Code") or "")
+            name = str(item.get("Name") or "")
+            if (name.replace(" ", "") == query and item.get("Classify") == "AStock"
+                    and re.fullmatch(r"\d{6}", code)):
+                return code, name
+    except Exception as exc:
+        logger.warning("东财名称搜索失败 %s: %s", query, exc)
+    return "", ""
+
+
+def _search_code_http(query: str) -> tuple[str, str]:
+    """中文名 → (代码, 名称)：腾讯主用 → 东财备用。
+
+    与 _lookup_name_http 互为反向。都要求名称精确相等（带模糊的板块/
+    行业名如"游戏"不该命中），找不到返回 ("", "")。
+    """
+    q = re.sub(r"\s+", "", query or "")
+    if not q:
+        return "", ""
+    hit = _search_tencent_name(q)
+    if hit[0]:
+        return hit
+    return _search_eastmoney_name(q)
+
+
 def _clean_name(name: str) -> str:
     """mootdx 名称表带对齐空格（"红 宝 丽"），下游所有展示都要紧凑写法。"""
     return re.sub(r"\s+", "", name or "")
@@ -148,8 +205,10 @@ def resolve_stock(query: str) -> tuple[str, str]:
     mock 模式只接受 6 位数字代码。
 
     性能约束：6 位代码走 astock 纯本地规范化，**不触发名称表构建**（mootdx
-    全市场建表从云服务器实测不可用）；名称先查已建好的表，查不到走 HTTP
-    单票兜底（腾讯主用，东财备用，亚秒级）。中文名必须查表，同步等。
+    全市场建表从云服务器实测不可用，中文路径的同步建表要 300s 熔断）；代码→
+    名称、名称→代码都走 HTTP 单票兜底（腾讯主用，东财备用，亚秒级）。
+    中文名只在表已建好时本地匹配（含唯一模糊匹配能力），否则 HTTP 搜索
+    精确匹配（板块/行业名不该命中）。
     """
     q = (query or "").strip()
     if not q:
@@ -159,10 +218,29 @@ def resolve_stock(query: str) -> tuple[str, str]:
             return q, f"{q}（模拟）"
         raise ValueError(f"找不到股票 '{q}'（mock 模式只接受 6 位代码）")
 
-    # 延迟导入 astock；resolve_ticker 覆盖代码规范化与中文名精确/唯一模糊匹配
+    # 延迟导入 astock；代码路径覆盖规范化（sh 前缀/.SH 后缀清洗）
     from tradingagents.dataflows import a_stock
 
-    code = a_stock.resolve_ticker(q)
+    has_chinese = any("一" <= ch <= "鿿" for ch in q)
+    if has_chinese:
+        code = ""
+        if a_stock._code_to_name:  # 表已建好才本地匹配（精确+唯一模糊）
+            try:
+                code = a_stock.resolve_ticker(q)
+            except ValueError as exc:
+                if "多只" in str(exc):  # 歧义提示对用户有价值，透传
+                    raise
+                code = ""
+        if not code:  # 表未建（服务器常态）/本地没中：HTTP 搜索精确匹配
+            code, found = _search_code_http(q)
+            if not code:
+                raise ValueError(
+                    f"找不到股票 '{q}'，请确认名称输入无误，或改用 6 位股票代码（如 600519）"
+                )
+            return code, _clean_name(found)
+    else:
+        code = a_stock.resolve_ticker(q)
+
     name = ""
     if a_stock._code_to_name is not None:
         name = a_stock._code_to_name.get(code, "")
