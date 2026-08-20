@@ -1041,6 +1041,7 @@ def get_fundamentals(
             logger.warning("mootdx finance failed for %s: %s", code, e)
 
         # --- Eastmoney push2: basic stock info (direct HTTP) ---
+        em_info_ok = False
         try:
             market_code = 1 if code.startswith("6") else 0
             _info_url = "https://push2.eastmoney.com/api/qt/stock/get"
@@ -1053,6 +1054,7 @@ def get_fundamentals(
             r = _em_get(_info_url, params=_info_params, timeout=10)
             d = r.json().get("data", {})
             if d:
+                em_info_ok = True
                 if d.get("f127"):
                     lines.append(f"行业: {d['f127']}")
                 if d.get("f84"):
@@ -1067,6 +1069,26 @@ def get_fundamentals(
                     lines.append(f"上市日期: {d['f189']}")
         except Exception as e:
             logger.warning("eastmoney push2 stock info failed for %s: %s", code, e)
+
+        if not em_info_ok:
+            # push2 不可达时（海外机房 TCP 层被拒，如阿里云国际站香港）走
+            # 东财 F10 公司概况补行业/上市日期（emweb 与 push2 不同链路，可用）；
+            # 市值字段腾讯行情已覆盖，不重复补。
+            try:
+                r = _em_get(
+                    "https://emweb.securities.eastmoney.com"
+                    "/PC_HSF10/CompanySurvey/CompanySurveyAjax",
+                    params={"code": f"{'SH' if code.startswith('6') else 'SZ'}{code}"},
+                    timeout=10,
+                )
+                info = r.json()
+                jbzl, fxxg = info.get("jbzl") or {}, info.get("fxxg") or {}
+                if jbzl.get("sshy"):
+                    lines.append(f"行业: {jbzl['sshy']}")
+                if fxxg.get("ssrq"):
+                    lines.append(f"上市日期: {fxxg['ssrq']}")
+            except Exception as e:
+                logger.warning("eastmoney F10 company survey failed for %s: %s", code, e)
 
         # --- 同花顺 direct HTTP: consensus EPS forecast ---
         try:
@@ -2071,10 +2093,18 @@ def get_fund_flow(
             "fields2": "f51,f52,f53,f54,f55,f56,f57",
         }
         klines = []
+        rt_failed = False
         if not historical:
-            r = _em_get(url_rt, params=params_rt, timeout=10)
-            d = r.json()
-            klines = d.get("data", {}).get("klines", [])
+            # 分钟资金流失败（push2 在海外机房被拦）不得拖垮下面的日级历史
+            # 资金流（push2his 链路不同、通常可用）——晨报盘前场景历史日级更关键。
+            try:
+                r = _em_get(url_rt, params=params_rt, timeout=10)
+                d = r.json()
+                klines = d.get("data", {}).get("klines", [])
+            except Exception as e:
+                rt_failed = True
+                logger.warning("push2 realtime fund flow failed for %s: %s", code, e)
+                lines.append("（实时分钟资金流暂不可用，以下为日级历史资金流。）\n")
 
         if klines:
             lines.append(
@@ -2106,9 +2136,10 @@ def get_fund_flow(
                         "Signal: Net main force OUTFLOW (bearish)"
                     )
         else:
-            lines.append(
-                "No realtime fund flow (non-trading hours or holiday)"
-            )
+            if not rt_failed:
+                lines.append(
+                    "No realtime fund flow (non-trading hours or holiday)"
+                )
 
         # Historical daily fund flow (push2his)
         if include_history:
@@ -2396,6 +2427,44 @@ def get_lockup_expiry(
 # 17. Industry Comparison (行业横向对比)
 # ---------------------------------------------------------------------------
 
+def _tencent_industry_rank(top_n: int = 20) -> list[str]:
+    """腾讯行业板块榜：东财 push2 clist 的替补（海外机房 push2 被 TCP 层拦截时用）。
+
+    proxy.finance.qq.com 与 qt.gtimg.cn 同属腾讯链路，海外可达。字段比东财少
+    上涨/下跌家数（输出以 — 占位），行业名/涨跌幅/领涨股齐全。
+    """
+    try:
+        r = _requests.get(
+            "https://proxy.finance.qq.com/ifzqgtimg/appstock/app/mktHs/rank",
+            params={"l": "100", "p": "1", "t": "01/averatio", "o": "0"},
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=10,
+        )
+        boards = []
+        for b in r.json().get("data") or []:
+            try:
+                boards.append((str(b.get("bd_name") or ""),
+                               float(b.get("bd_zdf") or 0),
+                               str(b.get("nzg_name") or "")))
+            except (TypeError, ValueError):
+                continue
+        if not boards:
+            return []
+        boards.sort(key=lambda x: x[1], reverse=True)
+        lines = [
+            f"\n## 全行业表现（腾讯板块 {len(boards)} 个，领涨/领跌各 {top_n} 名）",
+            "排名 | 行业 | 涨跌幅 | 领涨股",
+        ]
+        for i, (nm, pct, leader) in enumerate(boards[:top_n], 1):
+            lines.append(f"  ▲{i}. {nm} | {pct}% | {leader}")
+        for i, (nm, pct, leader) in enumerate(boards[-top_n:], 1):
+            lines.append(f"  ▽{i}. {nm} | {pct}% | {leader}")
+        return lines
+    except Exception as e:
+        logger.warning("tencent industry rank failed: %s", e)
+        return []
+
+
 def get_industry_comparison(
     ticker: str,
     trade_date: str,
@@ -2456,8 +2525,16 @@ def get_industry_comparison(
                     lines.append(f"  ... (showing top/bottom {top_n})")
                     break
         else:
-            lines.append("行业数据获取为空。")
+            fallback = _tencent_industry_rank(top_n)
+            if fallback:
+                lines.extend(fallback)
+            else:
+                lines.append("行业数据获取为空。")
     except Exception as e:
-        lines.append(f"行业对比查询失败: {e}")
+        fallback = _tencent_industry_rank(top_n)
+        if fallback:
+            lines.extend(fallback)
+        else:
+            lines.append(f"行业对比查询失败: {e}")
 
     return "\n".join(lines)
