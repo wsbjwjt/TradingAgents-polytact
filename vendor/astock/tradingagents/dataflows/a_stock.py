@@ -1751,7 +1751,7 @@ def get_hot_stocks(
                 "Chrome/117.0.0.0 Safari/537.36"
             )
         }
-        r = requests.get(url, headers=headers, timeout=10)
+        r = _requests.get(url, headers=headers, timeout=10)
         data = r.json()
 
         if data.get("errocode", 0) != 0:
@@ -1898,7 +1898,7 @@ def get_northbound_flow(
 
     try:
         url_rt = "https://data.hexin.cn/market/hsgtApi/method/dayChart/"
-        r = requests.get(url_rt, headers=hsgt_headers, timeout=10)
+        r = _requests.get(url_rt, headers=hsgt_headers, timeout=10)
         d = r.json()
 
         times = d.get("time", [])
@@ -2002,7 +2002,7 @@ def get_concept_blocks(
             f'?stock=[{{"code":"{code}","market":"ab","type":"stock"}}]'
             "&finClientType=pc"
         )
-        r = requests.get(url, headers=_BAIDU_PAE_HEADERS, timeout=10)
+        r = _requests.get(url, headers=_BAIDU_PAE_HEADERS, timeout=10)
         d = r.json()
 
         if str(d.get("ResultCode", -1)) != "0":
