@@ -13,6 +13,14 @@ import httpx
 
 TERMINAL = {"completed", "failed", "cancelled", "cancelled_failed"}
 
+# 提交重试：只重试"连接未建立"类错误（ConnectError/ConnectTimeout）——
+# 服务器没收到请求，重试不会重复建仓；ReadTimeout 可能已处理，重试会烧双份 token，不重试。
+# 首次 + 3 次退避 ≈ 覆盖 50s 的引擎重启窗口（603038 撞 compose up 停机窗口的教训）。
+SUBMIT_RETRIES = 3
+SUBMIT_BACKOFF = (5.0, 15.0, 30.0)
+# 轮询容错：GET 幂等，引擎短暂重启/网络抖动时连续失败 N 次才放弃
+POLL_ERROR_LIMIT = 3
+
 
 class APIError(RuntimeError):
     pass
@@ -92,8 +100,19 @@ class TradingAgentsClient:
             params["quick_analysis_model"] = quick_model
         if deep_model:
             params["deep_analysis_model"] = deep_model
-        body = self._request("POST", "/api/analysis/single",
-                             json={"symbol": symbol, "stock_code": symbol, "parameters": params})
+        last_exc: Optional[Exception] = None
+        body: Optional[dict] = None
+        for attempt in range(SUBMIT_RETRIES + 1):
+            try:
+                body = self._request("POST", "/api/analysis/single",
+                                     json={"symbol": symbol, "stock_code": symbol, "parameters": params})
+                break
+            except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+                last_exc = exc
+                if attempt < SUBMIT_RETRIES:
+                    time.sleep(SUBMIT_BACKOFF[attempt])
+        if body is None:
+            raise APIError(f"提交分析失败（引擎不可达，已重试 {SUBMIT_RETRIES} 次）: {last_exc}")
         task_id = body.get("data", {}).get("task_id")
         if not task_id:
             raise APIError(f"未返回 task_id: {body}")
@@ -112,11 +131,20 @@ class TradingAgentsClient:
         poll_interval: float = 10.0,
         timeout: float = 3600.0,
     ) -> dict:
-        """轮询到终态，返回最后一次 status。"""
+        """轮询到终态，返回最后一次 status；连续几次传输错误视为引擎短暂重启，容忍。"""
         deadline = time.time() + timeout
         status: dict = {}
+        errors = 0
         while time.time() < deadline:
-            status = self.get_status(task_id)
+            try:
+                status = self.get_status(task_id)
+                errors = 0
+            except httpx.HTTPError:
+                errors += 1
+                if errors > POLL_ERROR_LIMIT:
+                    raise
+                time.sleep(poll_interval)
+                continue
             if on_update:
                 try:
                     on_update(status)
